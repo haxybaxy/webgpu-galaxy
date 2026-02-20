@@ -80,20 +80,7 @@ cmake -B build -DWEBGPU_BACKEND=DAWN -DWEBGPU_BUILD_FROM_SOURCE=ON
 
 ### Emscripten (WebAssembly)
 
-```bash
-# Ensure emsdk is activated
-source emsdk/emsdk_env.sh
-
-# Configure and build
-emcmake cmake -B build-web
-cmake --build build-web
-
-# Output: build-web/src/galaxysim.html
-# Serve with any HTTP server:
-python3 -m http.server -d build-web/src 8080
-```
-
-Then open `http://localhost:8080/galaxysim.html` in a WebGPU-capable browser (Chrome 113+, Edge 113+, or Firefox Nightly with `dom.webgpu.enabled`).
+See the detailed [Running in the Browser](#running-in-the-browser) section below.
 
 ## Usage
 
@@ -333,6 +320,195 @@ Controls the accuracy-performance tradeoff of the Barnes-Hut algorithm. Nodes su
 - **10,000**: Default, good interactive performance
 - **50,000--100,000**: Requires capable GPU, octree build becomes the bottleneck
 
+## Running in the Browser
+
+GalaxySim compiles to WebAssembly and runs in any browser with WebGPU support. The build produces a self-contained `.html` page with the simulation canvas and the full Dear ImGui interface.
+
+### Prerequisites
+
+You need the **Emscripten SDK** (emsdk). A local copy is included in the repo under `emsdk/`, or you can install your own:
+
+```bash
+# Option A: Use the bundled emsdk
+cd emsdk
+./emsdk install latest
+./emsdk activate latest
+cd ..
+
+# Option B: Install globally (https://emscripten.org/docs/getting_started)
+git clone https://github.com/emscripten-core/emsdk.git
+cd emsdk && ./emsdk install latest && ./emsdk activate latest && cd ..
+```
+
+Minimum version: **Emscripten 3.1.50+** (required for WebGPU support).
+
+### Building the WASM bundle
+
+```bash
+# 1. Activate emsdk in your current shell
+source emsdk/emsdk_env.sh
+
+# 2. Configure with emcmake (uses Emscripten's WebGPU backend automatically)
+emcmake cmake -B build-web
+
+# 3. Build
+cmake --build build-web
+```
+
+This produces three files in `build-web/src/`:
+
+| File | Description |
+|------|-------------|
+| `galaxysim.html` | Entry page with Emscripten shell (canvas + console) |
+| `galaxysim.js` | JavaScript glue code (WebGPU init, WASM loader, GLFW shim) |
+| `galaxysim.wasm` | Compiled WebAssembly binary |
+
+### Serving locally
+
+Browsers require HTTP(S) to load WASM files -- you cannot open `galaxysim.html` directly from `file://`. Use any local HTTP server:
+
+```bash
+# Python (built-in)
+python3 -m http.server -d build-web/src 8080
+
+# Node.js
+npx serve build-web/src -p 8080
+
+# PHP
+php -S localhost:8080 -t build-web/src
+```
+
+Then open **http://localhost:8080/galaxysim.html** in your browser.
+
+### Browser compatibility
+
+WebGPU is required. As of early 2026, support is as follows:
+
+| Browser | Version | Status | Notes |
+|---------|---------|--------|-------|
+| **Chrome** | 113+ | Supported | Enabled by default since Chrome 113 (May 2023) |
+| **Edge** | 113+ | Supported | Chromium-based, same as Chrome |
+| **Chrome Android** | 121+ | Supported | Android 12+ with compatible GPU |
+| **Safari** | 18+ | Supported | macOS Sonoma / iOS 18+ with WebGPU feature flag |
+| **Firefox** | Nightly | Experimental | Requires `dom.webgpu.enabled` in `about:config` |
+| **Firefox (stable)** | -- | Not yet | WebGPU behind flag, not enabled by default |
+| **Samsung Internet** | -- | Not yet | No WebGPU support |
+
+**To check if your browser supports WebGPU**, open the browser console (F12) and run:
+
+```javascript
+console.log(!!navigator.gpu)  // true = supported
+```
+
+Or visit [webgpureport.org](https://webgpureport.org) for a detailed capability report.
+
+#### Enabling WebGPU in Firefox
+
+1. Open `about:config` in the address bar
+2. Search for `dom.webgpu.enabled`
+3. Set it to `true`
+4. Restart Firefox
+
+#### Enabling WebGPU in Safari
+
+1. Open **Safari > Settings > Advanced**
+2. Check **Show features for web developers**
+3. Go to **Feature Flags** tab
+4. Enable **WebGPU**
+5. Restart Safari
+
+### Build options for Emscripten
+
+The CMake configuration automatically sets these Emscripten linker flags:
+
+| Flag | Effect |
+|------|--------|
+| `-sASYNCIFY` | Enables async/await for WebGPU device initialization |
+| `-sALLOW_MEMORY_GROWTH=1` | Lets WASM heap grow dynamically (needed for large N) |
+| `-sFORCE_FILESYSTEM=1` | Enables Emscripten's virtual filesystem (for CSV export) |
+| `-sUSE_GLFW=3` | Uses Emscripten's built-in GLFW 3 implementation |
+
+The output is an `.html` file (set via `PROPERTIES SUFFIX ".html"`) that includes Emscripten's default shell with a canvas element and a text console.
+
+### WebGPU backend variants
+
+When building with Emscripten, the `WEBGPU_BACKEND` CMake variable supports two options:
+
+```bash
+# Default: uses Emscripten's built-in WebGPU bindings
+emcmake cmake -B build-web -DWEBGPU_BACKEND=EMSCRIPTEN
+
+# Alternative: Dawn's Emscripten port
+emcmake cmake -B build-web -DWEBGPU_BACKEND=EMDAWNWEBGPU
+```
+
+The default (`EMSCRIPTEN`) uses the browser's native WebGPU implementation and is recommended. `EMDAWNWEBGPU` bundles Dawn compiled to WASM, which increases binary size but can be useful for testing Dawn-specific behavior.
+
+### Differences from the native build
+
+| Aspect | Native | Browser |
+|--------|--------|---------|
+| Main loop | `while (app.isRunning())` spin loop | `emscripten_set_main_loop_arg()` callback driven by `requestAnimationFrame` |
+| GLFW | Fetched via FetchContent (native GLFW 3.4) | Emscripten's built-in GLFW 3 shim (`-sUSE_GLFW=3`) |
+| Window size | 1280x720 fixed | Maps to HTML canvas size |
+| `wgpuSurfacePresent` | Called explicitly each frame | Skipped (Emscripten presents automatically) |
+| GPU backend | wgpu-native or Dawn | Browser's WebGPU implementation |
+| `--headless` mode | Works (no window created) | Not applicable (always has canvas) |
+| `--export` CSV | Writes to real filesystem | Writes to Emscripten virtual FS (can be downloaded via browser console) |
+| Performance | Native GPU driver + CPU | WASM overhead + browser GPU layer |
+
+### Downloading CSV exports in the browser
+
+If you use `--export` in a browser build (via URL parameters or hardcoded config), the file is written to Emscripten's in-memory virtual filesystem. To retrieve it, open the browser console (F12) and run:
+
+```javascript
+// Read the file from Emscripten's virtual FS
+var data = FS.readFile('/results.csv', { encoding: 'utf8' });
+
+// Download it
+var blob = new Blob([data], { type: 'text/csv' });
+var a = document.createElement('a');
+a.href = URL.createObjectURL(blob);
+a.download = 'results.csv';
+a.click();
+```
+
+### Performance tips for browser
+
+- **Start with fewer particles**: 5,000--10,000 is a good starting range. WASM has overhead compared to native, and the octree build runs single-threaded in the browser.
+- **Use a Chromium-based browser**: Chrome and Edge currently have the most mature WebGPU implementations.
+- **Close other GPU-heavy tabs**: WebGPU shares GPU resources with the rest of the browser.
+- **Increase theta**: Setting the Barnes-Hut opening angle to 1.0 or higher significantly reduces GPU work per frame at the cost of accuracy.
+- **Check the Timing panel**: The ImGui timing breakdown works in the browser too -- use it to identify whether the bottleneck is tree build (CPU/WASM), force computation (GPU), or integration.
+
+### Deploying to a web server
+
+To host the simulation on a public server, copy the three build outputs and serve them with correct MIME types:
+
+```bash
+# Copy build artifacts
+mkdir -p deploy
+cp build-web/src/galaxysim.html deploy/index.html
+cp build-web/src/galaxysim.js deploy/
+cp build-web/src/galaxysim.wasm deploy/
+```
+
+Your web server must serve `.wasm` files with the correct MIME type. For **nginx**:
+
+```nginx
+types {
+    application/wasm wasm;
+}
+```
+
+For **Apache**, add to `.htaccess`:
+
+```apache
+AddType application/wasm .wasm
+```
+
+HTTPS is recommended (some browsers restrict WebGPU to secure contexts).
+
 ## Troubleshooting
 
 **No GPU detected / WebGPU initialization fails**
@@ -351,7 +527,25 @@ Controls the accuracy-performance tradeoff of the Barnes-Hut algorithm. Nodes su
 
 **Emscripten build fails**
 - Ensure `emcmake` and `emcc` are on your PATH (`source emsdk/emsdk_env.sh`)
-- WebGPU support in Emscripten requires version 3.1.50+
+- Verify version: `emcc --version` (must be 3.1.50+)
+- If you get linker errors about WebGPU symbols, your emsdk is too old -- run `./emsdk install latest && ./emsdk activate latest`
+
+**Browser shows "WebGPU not supported" or blank page**
+- Check WebGPU support: open the browser console and run `!!navigator.gpu`
+- Chrome 113+ and Edge 113+ support WebGPU by default
+- Firefox requires `dom.webgpu.enabled` in `about:config`
+- Safari requires the WebGPU feature flag (see [Enabling WebGPU in Safari](#enabling-webgpu-in-safari))
+- Some integrated GPUs (especially older Intel HD) may not be WebGPU-compatible even in supported browsers
+
+**Browser console shows "Failed to create GPU adapter"**
+- Your GPU or driver may not support the required WebGPU features
+- On Linux in Chrome, try launching with `--enable-unsafe-webgpu --enable-features=Vulkan`
+- On macOS, WebGPU uses Metal -- ensure macOS 13+ (Ventura) or later
+
+**WASM file fails to load (MIME type error)**
+- Your HTTP server must serve `.wasm` files as `application/wasm`
+- `file://` URLs do not work -- you must use an HTTP server
+- See the [Deploying to a web server](#deploying-to-a-web-server) section for server configuration
 
 **Window opens but stays black**
 - Click **Play** in the GUI panel -- the simulation starts paused by default
