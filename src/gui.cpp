@@ -40,14 +40,18 @@ void GUI::beginFrame(float deltaTime) {
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
 
-    ImGui::SetNextWindowSize(ImVec2(300, 350), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(300, 520), ImGuiCond_FirstUseEver);
     ImGui::Begin("Simulation Controls");
 
+    // --- Info ---
     ImGui::Text("FPS: %.1f", fps_);
     ImGui::Text("Particles: %d", particleCount_);
     ImGui::Text("Octree Nodes: %d", nodeCount_);
+    ImGui::Text("Scenario: %s", scenarioName_);
+    ImGui::Text("Integrator: %s", integratorName_);
     ImGui::Separator();
 
+    // --- Controls ---
     if (params_.paused) {
         if (ImGui::Button("Play")) {
             params_.paused = false;
@@ -70,11 +74,30 @@ void GUI::beginFrame(float deltaTime) {
 
     ImGui::Separator();
     ImGui::InputInt("Particle Count", &params_.numParticles, 1000, 5000);
-    if (params_.numParticles < 100) params_.numParticles = 100;
+    if (params_.numParticles < 2) params_.numParticles = 2;
     if (params_.numParticles > 100000) params_.numParticles = 100000;
 
     ImGui::Separator();
     ImGui::Checkbox("Show Octree (debug)", &params_.showOctree);
+
+    // --- Conservation Diagnostics ---
+    ImGui::Separator();
+    if (ImGui::CollapsingHeader("Diagnostics", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Text("Kinetic Energy:   %.4f", kineticEnergy_);
+        ImGui::Text("Potential Energy:  %.4f", potentialEnergy_);
+        ImGui::Text("Total Energy:     %.4f", totalEnergy_);
+        ImGui::Text("Energy Drift:     %.2e", energyDrift_);
+        ImGui::Text("|Momentum|:       %.6f", momentumMag_);
+    }
+
+    // --- Step Timing ---
+    if (ImGui::CollapsingHeader("Timing")) {
+        ImGui::Text("Tree Build: %.2f ms", treeBuildMs_);
+        ImGui::Text("Force:      %.2f ms", forceMs_);
+        ImGui::Text("Integrate:  %.2f ms", integrateMs_);
+        ImGui::Text("Total:      %.2f ms",
+                     treeBuildMs_ + forceMs_ + integrateMs_);
+    }
 
     ImGui::End();
     ImGui::Render();
@@ -97,7 +120,8 @@ void GUI::render(WGPUTextureView targetView) {
     passDesc.colorAttachmentCount = 1;
     passDesc.colorAttachments = &colorAttachment;
     passDesc.depthStencilAttachment = nullptr;
-    WGPURenderPassEncoder pass = wgpuCommandEncoderBeginRenderPass(encoder, &passDesc);
+    WGPURenderPassEncoder pass =
+        wgpuCommandEncoderBeginRenderPass(encoder, &passDesc);
     ImGui_ImplWGPU_RenderDrawData(ImGui::GetDrawData(), pass);
     wgpuRenderPassEncoderEnd(pass);
     wgpuRenderPassEncoderRelease(pass);

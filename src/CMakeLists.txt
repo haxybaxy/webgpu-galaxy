@@ -42,13 +42,25 @@ target_link_libraries(camera_lib PUBLIC glm::glm)
 add_library(gui_lib gui.cpp gui.hpp)
 target_link_libraries(gui_lib PUBLIC wgpu_utils graphics_lib imgui_lib glm::glm)
 
+# config library
+add_library(config_lib config.cpp config.hpp)
+target_link_libraries(config_lib PUBLIC spdlog)
+
+# diagnostics library
+add_library(diagnostics_lib diagnostics.cpp diagnostics.hpp)
+target_link_libraries(diagnostics_lib PUBLIC glm::glm)
+
+# exporter library
+add_library(exporter_lib exporter.cpp exporter.hpp)
+target_link_libraries(exporter_lib PUBLIC diagnostics_lib)
+
 # octree library
 add_library(octree_lib octree.cpp octree.hpp)
 target_link_libraries(octree_lib PUBLIC glm::glm)
 
 # simulation library
 add_library(simulation_lib simulation.cpp simulation.hpp)
-target_link_libraries(simulation_lib PUBLIC wgpu_utils octree_lib glm::glm spdlog)
+target_link_libraries(simulation_lib PUBLIC wgpu_utils octree_lib config_lib exporter_lib glm::glm spdlog)
 
 # particle renderer library
 add_library(particle_renderer_lib particle_renderer.cpp particle_renderer.hpp)
@@ -72,6 +84,9 @@ target_link_libraries(galaxysim PRIVATE
     octree_lib
     simulation_lib
     particle_renderer_lib
+    config_lib
+    diagnostics_lib
+    exporter_lib
     imgui_lib
     glm::glm
     spdlog)
