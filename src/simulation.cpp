@@ -1,6 +1,7 @@
 #include "simulation.hpp"
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <random>
 #include <spdlog/spdlog.h>
 
@@ -825,7 +826,8 @@ void Simulation::initialize(WGPUDevice device, WGPUQueue queue,
                     WGPUBufferUsage_CopySrc,
         numParticles_ * sizeof(glm::vec4));
     velocities_.initialize(
-        device, WGPUBufferUsage_Storage | WGPUBufferUsage_CopyDst,
+        device, WGPUBufferUsage_Storage | WGPUBufferUsage_CopyDst |
+                    WGPUBufferUsage_CopySrc,
         numParticles_ * sizeof(glm::vec4));
     colors_.initialize(device,
                        WGPUBufferUsage_Storage | WGPUBufferUsage_CopyDst,
@@ -882,6 +884,57 @@ void Simulation::reinitialize(WGPUDevice device, WGPUQueue queue,
                    numParticles_ * sizeof(glm::vec4));
 
     computeInitialForces(queue, config.softening, config.theta);
+}
+
+// ============================================================
+// GPU Readback (for diagnostics when using GPU tree path)
+// ============================================================
+
+void Simulation::readbackState(WGPUDevice device, WGPUQueue queue,
+                                std::vector<glm::vec4> &outPositions,
+                                std::vector<glm::vec4> &outVelocities) {
+    size_t bufSize = numParticles_ * sizeof(glm::vec4);
+
+    // Create staging buffers with MapRead | CopyDst
+    WGPUBufferDescriptor stagingDesc{};
+    stagingDesc.size = bufSize;
+    stagingDesc.usage = WGPUBufferUsage_CopyDst | WGPUBufferUsage_MapRead;
+    stagingDesc.mappedAtCreation = false;
+
+    WGPUBuffer stagingPos = wgpuDeviceCreateBuffer(device, &stagingDesc);
+    WGPUBuffer stagingVel = wgpuDeviceCreateBuffer(device, &stagingDesc);
+
+    // Copy storage -> staging
+    WGPUCommandEncoder encoder = wgpu_utils::createCommandEncoder(device);
+    wgpuCommandEncoderCopyBufferToBuffer(encoder, positions_.get(), 0,
+                                          stagingPos, 0, bufSize);
+    wgpuCommandEncoderCopyBufferToBuffer(encoder, velocities_.get(), 0,
+                                          stagingVel, 0, bufSize);
+    wgpu_utils::finishCommandEncoder(queue, encoder);
+
+    // Map and read positions
+    outPositions.resize(numParticles_);
+    const void *posData =
+        wgpu_utils::mapBufferSync(device, stagingPos, bufSize);
+    if (posData) {
+        std::memcpy(outPositions.data(), posData, bufSize);
+        wgpuBufferUnmap(stagingPos);
+    }
+
+    // Map and read velocities
+    outVelocities.resize(numParticles_);
+    const void *velData =
+        wgpu_utils::mapBufferSync(device, stagingVel, bufSize);
+    if (velData) {
+        std::memcpy(outVelocities.data(), velData, bufSize);
+        wgpuBufferUnmap(stagingVel);
+    }
+
+    // Cleanup staging buffers
+    wgpuBufferDestroy(stagingPos);
+    wgpuBufferRelease(stagingPos);
+    wgpuBufferDestroy(stagingVel);
+    wgpuBufferRelease(stagingVel);
 }
 
 // ============================================================
@@ -1492,21 +1545,6 @@ void Simulation::stepLeapfrogGpuTree(WGPUDevice device, WGPUQueue queue,
     params._pad[0] = params._pad[1] = 0.0f;
     paramsBuffer_.upload(queue, &params, sizeof(params));
 
-    // CPU mirror: half-kick + drift
-    for (int i = 0; i < numParticles_; i++) {
-        glm::vec3 vel(cpuVelocities_[i]);
-        glm::vec3 acc(cpuAccelerations_[i]);
-        vel += acc * (dt * 0.5f);
-        cpuVelocities_[i] = glm::vec4(vel, 0.0f);
-    }
-    for (int i = 0; i < numParticles_; i++) {
-        glm::vec3 pos(cpuPositions_[i]);
-        glm::vec3 vel(cpuVelocities_[i]);
-        float mass = cpuPositions_[i].w;
-        pos += vel * dt;
-        cpuPositions_[i] = glm::vec4(pos, mass);
-    }
-
     auto t1 = Clock::now();
 
     // Upload tree builder data BEFORE creating the command encoder
@@ -1663,18 +1701,6 @@ void Simulation::stepLeapfrogGpuTree(WGPUDevice device, WGPUQueue queue,
 
     // Submit everything
     wgpu_utils::finishCommandEncoder(queue, encoder);
-
-    // CPU mirror: force + second half-kick (using BH for diagnostics)
-    octree_.build(cpuPositions_);
-    if (octree_.nodeCount() > 0) {
-        cpuBarnesHut(softening, theta);
-    }
-    for (int i = 0; i < numParticles_; i++) {
-        glm::vec3 vel(cpuVelocities_[i]);
-        glm::vec3 acc(cpuAccelerations_[i]);
-        vel += acc * (dt * 0.5f);
-        cpuVelocities_[i] = glm::vec4(vel, 0.0f);
-    }
 
     auto t4 = Clock::now();
 

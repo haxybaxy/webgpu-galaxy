@@ -14,6 +14,9 @@ public:
     void step(WGPUDevice device, WGPUQueue queue, float dt, float softening,
               float theta);
     void reinitialize(WGPUDevice device, WGPUQueue queue, const Config &config);
+    void readbackState(WGPUDevice device, WGPUQueue queue,
+                       std::vector<glm::vec4> &outPositions,
+                       std::vector<glm::vec4> &outVelocities);
 
     WGPUBuffer getPositionBuffer() const { return positions_.get(); }
     WGPUBuffer getColorBuffer() const { return colors_.get(); }

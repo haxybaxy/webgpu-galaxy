@@ -190,7 +190,7 @@ void wgpuPollEvents([[maybe_unused]] WGPUDevice device,
 #if defined(WEBGPU_BACKEND_DAWN)
     wgpuDeviceTick(device);
 #elif defined(WEBGPU_BACKEND_WGPU)
-    wgpuDevicePoll(device, false, nullptr);
+    wgpuDevicePoll(device, yieldToWebBrowser, nullptr);
 #elif defined(WEBGPU_BACKEND_EMSCRIPTEN)
     if (yieldToWebBrowser) {
         emscripten_sleep(0);
