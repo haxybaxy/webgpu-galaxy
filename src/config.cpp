@@ -19,6 +19,22 @@ const char *integratorName(Integrator i) {
     return "Unknown";
 }
 
+const char *treeMethodName(TreeMethod t) {
+    switch (t) {
+    case TreeMethod::CPU: return "CPU Octree";
+    case TreeMethod::GPU: return "GPU BVH (LBVH)";
+    }
+    return "Unknown";
+}
+
+const char *forceMethodName(ForceMethod f) {
+    switch (f) {
+    case ForceMethod::Tree: return "Tree (Barnes-Hut)";
+    case ForceMethod::Direct: return "Direct (O(N^2))";
+    }
+    return "Unknown";
+}
+
 Config parseArgs(int argc, char **argv) {
     Config cfg;
 
@@ -56,6 +72,16 @@ Config parseArgs(int argc, char **argv) {
             cfg.maxSteps = std::stoi(nextVal());
         } else if (arg == "--export") {
             cfg.exportPath = nextVal();
+        } else if (arg == "--tree") {
+            std::string val = nextVal();
+            if (val == "cpu") cfg.treeMethod = TreeMethod::CPU;
+            else if (val == "gpu") cfg.treeMethod = TreeMethod::GPU;
+            else spdlog::warn("Unknown tree method '{}', using default", val);
+        } else if (arg == "--force-method") {
+            std::string val = nextVal();
+            if (val == "tree") cfg.forceMethod = ForceMethod::Tree;
+            else if (val == "direct") cfg.forceMethod = ForceMethod::Direct;
+            else spdlog::warn("Unknown force method '{}', using default", val);
         } else if (arg == "--headless") {
             cfg.headless = true;
         } else if (arg == "--verbose") {

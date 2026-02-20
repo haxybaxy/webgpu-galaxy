@@ -76,6 +76,8 @@ public:
         gui_.initialize(device_, surfaceFormat_, window_);
         gui_.setScenarioName(scenarioName(config_.scenario));
         gui_.setIntegratorName(integratorName(config_.integrator));
+        gui_.setTreeMethodName(treeMethodName(config_.treeMethod));
+        gui_.setForceMethodName(forceMethodName(config_.forceMethod));
 
         camera_.setDistance(80.0f);
         camera_.setTarget(glm::vec3(0.0f, 0.0f, 0.0f));
@@ -324,10 +326,13 @@ int main(int argc, char **argv) {
 
     Config config = parseArgs(argc, argv);
 
-    spdlog::info("Config: scenario={}, integrator={}, N={}, dt={}, "
-                 "softening={}, theta={}, seed={}",
+    spdlog::info("Config: scenario={}, integrator={}, tree={}, force={}, N={}, "
+                 "dt={}, softening={}, theta={}, seed={}",
                  scenarioName(config.scenario),
-                 integratorName(config.integrator), config.numParticles,
+                 integratorName(config.integrator),
+                 treeMethodName(config.treeMethod),
+                 forceMethodName(config.forceMethod),
+                 config.numParticles,
                  config.dt, config.softening, config.theta, config.seed);
 
     if (config.headless) {

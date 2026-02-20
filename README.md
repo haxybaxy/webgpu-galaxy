@@ -10,7 +10,8 @@ Supports up to 100,000 particles with O(N log N) force computation, symplectic L
 
 ## Features
 
-- **Barnes-Hut octree** gravity solver running on the GPU via WGSL compute shaders (O(N log N) per step)
+- **GPU-native LBVH tree construction**: bounding box reduction, Morton code sort, Karras (2012) binary radix tree, bottom-up aggregation -- all on the GPU via WGSL compute shaders
+- **Barnes-Hut force traversal** on the GPU BVH (O(N log N) per step), with optional CPU octree fallback
 - **CPU-GPU dual-track** architecture: physics computed on both CPU and GPU every step, avoiding expensive GPU readbacks
 - **KDK Leapfrog integrator** (symplectic, 2nd-order) with Euler fallback
 - **Three initial-condition scenarios**: rotating disk galaxy, Plummer sphere, two-body orbit
@@ -98,6 +99,8 @@ Opens a 1280x720 window with a rotating disk galaxy of 10,000 particles. The sim
 |--------|--------|---------|-------------|
 | `--scenario` | `disk`, `plummer`, `twobody` | `disk` | Initial particle distribution |
 | `--integrator` | `leapfrog`, `euler` | `leapfrog` | Time integration method |
+| `--tree` | `gpu`, `cpu` | `gpu` | Tree construction method (GPU LBVH or CPU octree) |
+| `--force-method` | `tree`, `direct` | `tree` | Force computation (Barnes-Hut tree traversal or O(N^2) direct sum) |
 | `--N` | 2 -- 100000 | `10000` | Number of particles |
 | `--dt` | float | `0.001` | Timestep |
 | `--softening` | float | `0.5` | Gravitational softening length |
@@ -111,7 +114,7 @@ Opens a 1280x720 window with a rotating disk galaxy of 10,000 particles. The sim
 ### Examples
 
 ```bash
-# Large Plummer sphere with high accuracy
+# Large Plummer sphere with high accuracy (GPU tree, default)
 ./build/src/galaxysim --scenario plummer --N 50000 --theta 0.5
 
 # Quick two-body orbit test
@@ -119,6 +122,12 @@ Opens a 1280x720 window with a rotating disk galaxy of 10,000 particles. The sim
 
 # Headless benchmark: 5000 steps, export results
 ./build/src/galaxysim --headless --scenario disk --N 20000 --steps 5000 --export results.csv
+
+# Use CPU octree instead of GPU LBVH
+./build/src/galaxysim --tree cpu --N 10000
+
+# Direct O(N^2) force computation (no tree, exact but slow)
+./build/src/galaxysim --force-method direct --N 1000
 
 # Euler integrator comparison
 ./build/src/galaxysim --integrator euler --N 5000 --steps 2000 --export euler.csv
@@ -203,27 +212,46 @@ Every simulation step runs equivalent physics on both CPU and GPU in parallel. T
 
 ### Simulation Step (KDK Leapfrog)
 
-The default integrator is the Kick-Drift-Kick (KDK) Leapfrog scheme, a symplectic 2nd-order method:
+The default integrator is the Kick-Drift-Kick (KDK) Leapfrog scheme, a symplectic 2nd-order method. With the default GPU tree (`--tree gpu`), the entire step runs in a single command encoder submission:
 
 1. **Half-kick**: `v += a * dt/2` (CPU loop + GPU kick shader)
 2. **Drift**: `x += v * dt` (CPU loop + GPU drift shader)
-3. **Octree build**: `Octree::build()` from CPU positions, flatten to `OctreeNode[]`, upload to GPU
-4. **Force computation**: Barnes-Hut traversal on both CPU (loop over particles) and GPU (compute shader with explicit stack, depth 64)
+3. **GPU tree build** (7 compute passes -- see below)
+4. **Force computation**: BVH traversal on GPU + Barnes-Hut octree traversal on CPU (for diagnostics)
 5. **Second half-kick**: `v += a * dt/2` (CPU loop + GPU kick shader)
+
+With `--tree cpu`, step 3 is replaced by a CPU octree build with upload to GPU, and the force shader traverses the octree instead of the BVH.
 
 The Euler integrator (`--integrator euler`) follows a simpler force-then-integrate sequence and is preserved as a first-order fallback for comparison.
 
-### Barnes-Hut Algorithm
+### GPU Tree Construction (LBVH)
 
-The octree is built on the CPU each step from the mirror position array. Each internal node stores the center of mass and total mass of all particles in its subtree. The force shader traverses the tree with the opening criterion:
+The default tree method builds a Linear Bounding Volume Hierarchy entirely on the GPU each step. This avoids the CPU octree build bottleneck and keeps all data GPU-resident. The pipeline consists of 7 compute passes recorded into a single command encoder:
 
+| Pass | Shader | Workgroup Size | Purpose |
+|------|--------|---------------|---------|
+| 1 | BboxPass1 | 256 | Per-workgroup bounding box reduction |
+| 2 | BboxPass2 | 256 | Final bounding box reduction (1 workgroup) |
+| 3 | Morton | 256 | 30-bit Morton code computation from normalized positions |
+| 4 | BitonicSort | 256 | Bitonic merge sort on Morton codes + indices (~153 passes for 100K) |
+| 5 | Karras | 256 | Binary radix tree construction (Karras 2012) |
+| 6 | LeafInit | 256 | Initialize leaf nodes with particle positions and masses |
+| 7 | Aggregate | 256 | Bottom-up center-of-mass and AABB propagation using atomic counters |
+
+The resulting BVH is a binary tree stored as an array of `BVHNodeGPU` structs (64 bytes each):
+
+```cpp
+struct BVHNodeGPU {
+    glm::vec4 centerOfMass;  // xyz = COM, w = total mass
+    glm::vec4 boundsMin;     // xyz = AABB min
+    glm::vec4 boundsMax;     // xyz = AABB max
+    int32_t left, right, parent, particleIdx;
+};
 ```
-halfWidth^2 / distSq < theta^2
-```
 
-When this condition is met, the node is treated as a single body at its center of mass. Lower theta values force deeper traversal (more accurate, slower). The recommended range is 0.3--1.0.
+### CPU Octree (fallback)
 
-### OctreeNode GPU Layout
+With `--tree cpu`, the octree is built on the CPU each step from the mirror position array, flattened to `OctreeNode[]`, and uploaded to the GPU. Each internal node stores the center of mass, total mass, bounding box center, and half-width:
 
 ```cpp
 struct OctreeNode {
@@ -233,13 +261,27 @@ struct OctreeNode {
 };
 ```
 
+### Barnes-Hut Force Computation
+
+The force shader traverses the tree with an explicit stack (depth 64) using the opening criterion:
+
+- **GPU BVH** (`--tree gpu`): `maxExtent^2 / distSq < theta^2` (where maxExtent is the largest AABB side)
+- **CPU octree** (`--tree cpu`): `halfWidth^2 / distSq < theta^2`
+
+When the criterion is met, the node is treated as a single body at its center of mass. Lower theta values force deeper traversal (more accurate, slower). The recommended range is 0.3--1.0.
+
+With `--force-method direct`, tree construction is skipped entirely and forces are computed by direct O(N^2) pairwise summation. This is exact but only practical for N < ~5000.
+
 ### Shader Pipeline
 
 All shaders are WGSL compute shaders embedded as C string literals (no separate `.wgsl` files):
 
 | Shader | Workgroup Size | Purpose |
 |--------|---------------|---------|
-| Force | 64 | Barnes-Hut tree traversal, writes accelerations |
+| **Tree build (7 shaders)** | 256 | LBVH construction (see GPU Tree Construction above) |
+| BVH Force | 64 | Barnes-Hut traversal on GPU BVH, writes accelerations |
+| Force (octree) | 64 | Barnes-Hut traversal on CPU octree (fallback) |
+| Direct Force | 64 | O(N^2) pairwise force summation |
 | Kick | 256 | Half-step velocity update: `v += a * dt/2` |
 | Drift | 256 | Position update: `x += v * dt` |
 | Integrate (Euler) | 256 | Combined velocity + position update (Euler fallback) |
@@ -256,7 +298,8 @@ offset 4:  f32 softening
 offset 8:  f32 theta
 offset 12: u32 numParticles
 offset 16: u32 nodeCount
-offset 20: f32[3] padding
+offset 20: u32 paddedN          (next power-of-2 >= N, used by GPU tree/sort)
+offset 24: f32[2] padding
 ```
 
 This struct is `alignas(16)` in C++ and must match the WGSL layout exactly.
@@ -273,7 +316,8 @@ galaxysim/
     CMakeLists.txt         Source build rules (per-file static libraries)
     main.cpp               Application class (interactive) + runHeadless() (batch)
     simulation.cpp/.hpp    Physics engine: embedded shaders, scenarios, integrators, CPU-GPU step
-    octree.cpp/.hpp        Octree: recursive insert, center-of-mass propagation, flatten to GPU
+    gpu_tree_builder.cpp/.hpp  GPU LBVH pipeline: 7 compute shaders for tree construction
+    octree.cpp/.hpp        CPU octree fallback: recursive insert, COM propagation, flatten to GPU
     particle_renderer.cpp/.hpp  WebGPU render pipeline with embedded vertex/fragment shader
     camera.cpp/.hpp        Orbital camera with WASD + mouse controls
     gui.cpp/.hpp           Dear ImGui control panel and diagnostics display
@@ -318,7 +362,7 @@ Controls the accuracy-performance tradeoff of the Barnes-Hut algorithm. Nodes su
 - **2**: Two-body (forced by `--scenario twobody`)
 - **1,000--5,000**: Potential energy computed, full conservation diagnostics
 - **10,000**: Default, good interactive performance
-- **50,000--100,000**: Requires capable GPU, octree build becomes the bottleneck
+- **50,000--100,000**: Requires capable GPU. With `--tree gpu` (default), the bitonic sort dominates. With `--tree cpu`, the octree build becomes the bottleneck
 
 ## Running in the Browser
 
@@ -516,9 +560,10 @@ HTTPS is recommended (some browsers restrict WebGPU to secure contexts).
 - On Linux, try running with `MESA_VK_DEVICE_SELECT=list` to check available devices
 
 **Poor performance at high particle counts**
-- Increase `--theta` to reduce octree traversal depth
+- Ensure you're using `--tree gpu` (the default) -- the GPU LBVH pipeline is significantly faster than `--tree cpu` at high N
+- Increase `--theta` to reduce tree traversal depth
 - Increase `--softening` to prevent deep tree nodes from close encounters
-- The octree build is single-threaded on CPU and becomes the bottleneck above ~50K particles
+- With `--tree cpu`, the octree build is single-threaded on CPU and becomes the bottleneck above ~50K particles
 
 **Energy drift is large**
 - Use `--integrator leapfrog` (default) instead of Euler

@@ -46,6 +46,8 @@ public:
     // Config display
     void setScenarioName(const char *name) { scenarioName_ = name; }
     void setIntegratorName(const char *name) { integratorName_ = name; }
+    void setTreeMethodName(const char *name) { treeMethodName_ = name; }
+    void setForceMethodName(const char *name) { forceMethodName_ = name; }
 
 private:
     void initImGui();
@@ -76,4 +78,6 @@ private:
     // Config info
     const char *scenarioName_ = "Unknown";
     const char *integratorName_ = "Unknown";
+    const char *treeMethodName_ = "Unknown";
+    const char *forceMethodName_ = "Unknown";
 };

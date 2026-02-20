@@ -46,9 +46,11 @@ void GUI::beginFrame(float deltaTime) {
     // --- Info ---
     ImGui::Text("FPS: %.1f", fps_);
     ImGui::Text("Particles: %d", particleCount_);
-    ImGui::Text("Octree Nodes: %d", nodeCount_);
+    ImGui::Text("Tree Nodes: %d", nodeCount_);
     ImGui::Text("Scenario: %s", scenarioName_);
     ImGui::Text("Integrator: %s", integratorName_);
+    ImGui::Text("Tree: %s", treeMethodName_);
+    ImGui::Text("Force: %s", forceMethodName_);
     ImGui::Separator();
 
     // --- Controls ---
