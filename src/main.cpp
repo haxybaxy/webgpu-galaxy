@@ -9,6 +9,7 @@
 #include "wgpu_utils.hpp"
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <imgui.h>
 #include <spdlog/spdlog.h>
 
 #ifdef __EMSCRIPTEN__
@@ -85,14 +86,17 @@ public:
         camera_.setTarget(glm::vec3(0.0f, 0.0f, 0.0f));
 
         setMouseMoveCallback(window_, [this](double x, double y) {
-            camera_.onMouseMove(x, y);
+            if (!ImGui::GetIO().WantCaptureMouse)
+                camera_.onMouseMove(x, y);
         });
         setScrollCallback(window_, [this](double /*xoff*/, double yoff) {
-            camera_.onScroll(yoff);
+            if (!ImGui::GetIO().WantCaptureMouse)
+                camera_.onScroll(yoff);
         });
         setMouseButtonCallback(
             window_, [this](int button, int action, int mods) {
-                camera_.onMouseButton(button, action, mods);
+                if (!ImGui::GetIO().WantCaptureMouse)
+                    camera_.onMouseButton(button, action, mods);
             });
 
         // Open exporter if path specified
@@ -123,13 +127,15 @@ public:
 
         pollEvents();
 
-        // Camera input
-        camera_.update(dt, isKeyPressed(window_, Key::W),
-                       isKeyPressed(window_, Key::A),
-                       isKeyPressed(window_, Key::S),
-                       isKeyPressed(window_, Key::D),
-                       isKeyPressed(window_, Key::Space),
-                       isKeyPressed(window_, Key::LeftShift));
+        // Camera input (skip when ImGui wants keyboard, e.g. typing in InputInt)
+        if (!ImGui::GetIO().WantCaptureKeyboard) {
+            camera_.update(dt, isKeyPressed(window_, Key::W),
+                           isKeyPressed(window_, Key::A),
+                           isKeyPressed(window_, Key::S),
+                           isKeyPressed(window_, Key::D),
+                           isKeyPressed(window_, Key::Space),
+                           isKeyPressed(window_, Key::LeftShift));
+        }
 
         SimParams &params = gui_.getParams();
 

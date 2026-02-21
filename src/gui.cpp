@@ -21,6 +21,17 @@ void GUI::initImGui() {
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGui::StyleColorsDark();
+
+    // Scale up for mobile touch targets
+    ImGuiIO &io = ImGui::GetIO();
+    io.FontGlobalScale = 1.5f;
+
+    ImGuiStyle &style = ImGui::GetStyle();
+    style.FramePadding = ImVec2(12, 8);
+    style.ItemSpacing = ImVec2(10, 8);
+    style.GrabMinSize = 20.0f;
+    style.ScrollbarSize = 20.0f;
+
     ImGui_ImplGlfw_InitForOther(window_, true);
     ImGui_ImplWGPU_InitInfo initInfo{};
     initInfo.Device = device_;
@@ -40,7 +51,7 @@ void GUI::beginFrame(float deltaTime) {
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
 
-    ImGui::SetNextWindowSize(ImVec2(300, 520), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(380, 600), ImGuiCond_FirstUseEver);
     ImGui::Begin("Simulation Controls");
 
     // --- Info ---
@@ -54,17 +65,18 @@ void GUI::beginFrame(float deltaTime) {
     ImGui::Separator();
 
     // --- Controls ---
+    ImVec2 buttonSize(120, 40);
     if (params_.paused) {
-        if (ImGui::Button("Play")) {
+        if (ImGui::Button("Play", buttonSize)) {
             params_.paused = false;
         }
     } else {
-        if (ImGui::Button("Pause")) {
+        if (ImGui::Button("Pause", buttonSize)) {
             params_.paused = true;
         }
     }
     ImGui::SameLine();
-    if (ImGui::Button("Step")) {
+    if (ImGui::Button("Step", buttonSize)) {
         params_.stepOnce = true;
     }
     ImGui::Separator();
