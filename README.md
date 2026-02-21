@@ -5,6 +5,7 @@ Real-time N-body galaxy simulator using the Barnes-Hut algorithm. Runs gravitati
 Supports up to 100,000 particles with O(N log N) force computation, symplectic Leapfrog integration, and per-step energy/momentum conservation diagnostics.
 
 You can check out the simulation on your web browser [here!](https://haxybaxy.github.io/webgpu-galaxy/) (Only compatible with chrome)
+
 This was done for my Bachelor's Thesis, which you can also check out [here](https://github.com/haxybaxy/capstone).
 
 ![C++20](https://img.shields.io/badge/C%2B%2B-20-blue)
