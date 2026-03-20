@@ -116,6 +116,8 @@ public:
     }
 
     void loop() {
+        if (!running_) return;
+
         double now = getTimeSeconds();
         float dt = static_cast<float>(now - lastTime_);
         lastTime_ = now;
@@ -235,12 +237,26 @@ public:
 #ifdef WEBGPU_BACKEND_WGPU
         wgpuTextureRelease(surfaceTexture.texture);
 #endif
+
+#ifdef __EMSCRIPTEN__
+        // Flush GPU queue every 4 frames to prevent command buffer
+        // accumulation in the browser
+        if (stepCount_ > 0 && stepCount_ % 4 == 0) {
+            wgpu_utils::flushGpuQueue(device_, queue_);
+        } else {
+            wgpuPollEvents(device_, true);
+        }
+#else
         wgpuPollEvents(device_, true);
+#endif
 
         // Check step limit for interactive mode
         if (config_.maxSteps > 0 && stepCount_ >= config_.maxSteps) {
             spdlog::info("Reached step limit ({})", config_.maxSteps);
             running_ = false;
+#ifdef __EMSCRIPTEN__
+            emscripten_cancel_main_loop();
+#endif
         }
     }
 
