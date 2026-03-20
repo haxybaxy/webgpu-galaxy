@@ -23,6 +23,8 @@ void deviceWait(WGPUDevice device, const bool *isDone);
 void wgpuPollEvents([[maybe_unused]] WGPUDevice device,
                     [[maybe_unused]] bool yieldToWebBrowser);
 
+void flushGpuQueue(WGPUDevice device, WGPUQueue queue);
+
 class Buffer {
     WGPUBuffer m_buffer;
     WGPUDevice m_device;

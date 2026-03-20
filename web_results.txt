@@ -1,0 +1,125 @@
+2026-03-20 21:37:51.846] [info] Simulation initialized: 100 particles, Plummer Sphere, Leapfrog (KDK), GPU BVH (LBVH), Tree (Barnes-Hut)
+[2026-03-20 21:37:52.385] [info] Step 100/1000 — E_drift=3.56e-03, |P|=24.225729, tree=0.100ms, force=0.000ms, integrate=0.000ms, total=0.100ms
+[2026-03-20 21:37:52.925] [info] Step 200/1000 — E_drift=1.14e-02, |P|=24.202549, tree=0.300ms, force=0.100ms, integrate=0.100ms, total=0.500ms
+[2026-03-20 21:37:53.572] [info] Step 300/1000 — E_drift=2.03e-02, |P|=24.179296, tree=0.100ms, force=0.000ms, integrate=0.000ms, total=0.100ms
+[2026-03-20 21:37:54.116] [info] Step 400/1000 — E_drift=3.00e-02, |P|=24.156137, tree=0.100ms, force=0.100ms, integrate=0.000ms, total=0.200ms
+[2026-03-20 21:37:54.674] [info] Step 500/1000 — E_drift=4.13e-02, |P|=24.133166, tree=0.200ms, force=0.100ms, integrate=0.100ms, total=0.400ms
+[2026-03-20 21:37:55.229] [info] Step 600/1000 — E_drift=6.37e-02, |P|=24.110395, tree=0.200ms, force=0.000ms, integrate=0.000ms, total=0.200ms
+[2026-03-20 21:37:55.786] [info] Step 700/1000 — E_drift=9.45e-02, |P|=24.088051, tree=0.200ms, force=0.100ms, integrate=0.000ms, total=0.300ms
+[2026-03-20 21:37:56.345] [info] Step 800/1000 — E_drift=1.25e-01, |P|=24.066184, tree=0.200ms, force=0.100ms, integrate=0.000ms, total=0.300ms
+[2026-03-20 21:37:56.894] [info] Step 900/1000 — E_drift=1.55e-01, |P|=24.044703, tree=0.100ms, force=0.100ms, integrate=0.000ms, total=0.200ms
+[2026-03-20 21:37:57.445] [info] Step 1000/1000 — E_drift=1.83e-01, |P|=24.023651, tree=0.100ms, force=0.200ms, integrate=0.000ms, total=0.300ms
+[2026-03-20 21:37:57.459] [info] Finished. Final energy drift: 1.833390e-01
+[2026-03-20 21:37:57.460] [info] Final |momentum|: 2.402365e+01
+
+[2026-03-20 21:51:39.977] [info] Simulation initialized: 500 particles, Plummer Sphere, Leapfrog (KDK), GPU BVH (LBVH), Tree (Barnes-Hut)
+[2026-03-20 21:51:40.528] [info] Step 100/1000 — E_drift=9.94e-03, |P|=76.312584, tree=0.300ms, force=0.100ms, integrate=0.000ms, total=0.400ms
+[2026-03-20 21:51:41.074] [info] Step 200/1000 — E_drift=4.09e-02, |P|=76.305079, tree=0.100ms, force=0.100ms, integrate=0.000ms, total=0.200ms
+[2026-03-20 21:51:41.642] [info] Step 300/1000 — E_drift=8.59e-02, |P|=76.297927, tree=0.300ms, force=0.000ms, integrate=0.000ms, total=0.300ms
+[2026-03-20 21:51:42.216] [info] Step 400/1000 — E_drift=1.42e-01, |P|=76.290801, tree=0.200ms, force=0.100ms, integrate=0.000ms, total=0.300ms
+[2026-03-20 21:51:42.778] [info] Step 500/1000 — E_drift=2.03e-01, |P|=76.283667, tree=0.200ms, force=0.100ms, integrate=0.100ms, total=0.400ms
+[2026-03-20 21:51:43.326] [info] Step 600/1000 — E_drift=2.67e-01, |P|=76.276298, tree=0.300ms, force=0.100ms, integrate=0.000ms, total=0.400ms
+[2026-03-20 21:51:43.875] [info] Step 700/1000 — E_drift=3.32e-01, |P|=76.268772, tree=0.200ms, force=0.100ms, integrate=0.000ms, total=0.300ms
+[2026-03-20 21:51:44.438] [info] Step 800/1000 — E_drift=3.96e-01, |P|=76.261427, tree=0.200ms, force=0.100ms, integrate=0.000ms, total=0.300ms
+[2026-03-20 21:51:44.989] [info] Step 900/1000 — E_drift=4.59e-01, |P|=76.254221, tree=0.200ms, force=0.100ms, integrate=0.000ms, total=0.300ms
+[2026-03-20 21:51:45.540] [info] Step 1000/1000 — E_drift=5.19e-01, |P|=76.247266, tree=0.300ms, force=0.100ms, integrate=0.000ms, total=0.400ms
+[2026-03-20 21:51:45.553] [info] Finished. Final energy drift: 5.192702e-01
+[2026-03-20 21:51:45.555] [info] Final |momentum|: 7.624727e+01
+
+2026-03-20 21:52:04.228] [info] Simulation initialized: 1000 particles, Plummer Sphere, Leapfrog (KDK), GPU BVH (LBVH), Tree (Barnes-Hut)
+[2026-03-20 21:52:04.754] [info] Step 100/1000 — E_drift=1.46e-02, |P|=161.080056, tree=0.400ms, force=0.100ms, integrate=0.000ms, total=0.500ms
+[2026-03-20 21:52:05.345] [info] Step 200/1000 — E_drift=6.68e-02, |P|=161.088155, tree=0.300ms, force=0.000ms, integrate=0.000ms, total=0.300ms
+[2026-03-20 21:52:05.932] [info] Step 300/1000 — E_drift=1.39e-01, |P|=161.096409, tree=0.500ms, force=0.000ms, integrate=0.000ms, total=0.500ms
+[2026-03-20 21:52:06.508] [info] Step 400/1000 — E_drift=2.22e-01, |P|=161.104866, tree=0.200ms, force=0.100ms, integrate=0.000ms, total=0.300ms
+[2026-03-20 21:52:07.079] [info] Step 500/1000 — E_drift=3.10e-01, |P|=161.114055, tree=0.300ms, force=0.000ms, integrate=0.000ms, total=0.300ms
+[2026-03-20 21:52:07.645] [info] Step 600/1000 — E_drift=3.97e-01, |P|=161.123772, tree=0.300ms, force=0.100ms, integrate=0.000ms, total=0.400ms
+[2026-03-20 21:52:08.218] [info] Step 700/1000 — E_drift=4.80e-01, |P|=161.134152, tree=0.300ms, force=0.100ms, integrate=0.000ms, total=0.400ms
+[2026-03-20 21:52:08.788] [info] Step 800/1000 — E_drift=5.58e-01, |P|=161.145176, tree=0.300ms, force=0.000ms, integrate=0.000ms, total=0.300ms
+[2026-03-20 21:52:09.359] [info] Step 900/1000 — E_drift=6.32e-01, |P|=161.159434, tree=0.400ms, force=0.000ms, integrate=0.000ms, total=0.400ms
+[2026-03-20 21:52:09.943] [info] Step 1000/1000 — E_drift=7.00e-01, |P|=161.177774, tree=0.400ms, force=0.000ms, integrate=0.000ms, total=0.400ms
+[2026-03-20 21:52:09.957] [info] Finished. Final energy drift: 6.996444e-01
+[2026-03-20 21:52:09.958] [info] Final |momentum|: 1.611778e+02
+
+026-03-20 21:52:21.784] [info] Simulation initialized: 2000 particles, Plummer Sphere, Leapfrog (KDK), GPU BVH (LBVH), Tree (Barnes-Hut)
+[2026-03-20 21:52:22.330] [info] Step 100/1000 — E_drift=2.74e-02, |P|=777.312910, tree=0.400ms, force=0.000ms, integrate=0.100ms, total=0.500ms
+[2026-03-20 21:52:22.894] [info] Step 200/1000 — E_drift=1.22e-01, |P|=777.322004, tree=0.300ms, force=0.000ms, integrate=0.000ms, total=0.300ms
+[2026-03-20 21:52:23.469] [info] Step 300/1000 — E_drift=2.42e-01, |P|=777.331055, tree=0.200ms, force=0.100ms, integrate=0.000ms, total=0.300ms
+[2026-03-20 21:52:24.034] [info] Step 400/1000 — E_drift=3.67e-01, |P|=777.340089, tree=0.300ms, force=0.000ms, integrate=0.000ms, total=0.300ms
+[2026-03-20 21:52:24.592] [info] Step 500/1000 — E_drift=4.86e-01, |P|=777.349067, tree=0.200ms, force=0.100ms, integrate=0.000ms, total=0.300ms
+[2026-03-20 21:52:25.151] [info] Step 600/1000 — E_drift=5.94e-01, |P|=777.357992, tree=0.100ms, force=0.100ms, integrate=0.000ms, total=0.200ms
+[2026-03-20 21:52:25.721] [info] Step 700/1000 — E_drift=6.93e-01, |P|=777.366806, tree=0.100ms, force=0.100ms, integrate=0.000ms, total=0.200ms
+[2026-03-20 21:52:26.280] [info] Step 800/1000 — E_drift=7.80e-01, |P|=777.375538, tree=0.200ms, force=0.100ms, integrate=0.000ms, total=0.300ms
+[2026-03-20 21:52:26.847] [info] Step 900/1000 — E_drift=8.59e-01, |P|=777.384240, tree=0.200ms, force=0.100ms, integrate=0.100ms, total=0.400ms
+[2026-03-20 21:52:27.405] [info] Step 1000/1000 — E_drift=9.29e-01, |P|=777.392862, tree=0.300ms, force=0.100ms, integrate=0.000ms, total=0.400ms
+[2026-03-20 21:52:27.423] [info] Finished. Final energy drift: 9.293248e-01
+[2026-03-20 21:52:27.424] [info] Final |momentum|: 7.773929e+02
+
+[2026-03-20 21:52:53.780] [info] Simulation initialized: 5000 particles, Plummer Sphere, Leapfrog (KDK), GPU BVH (LBVH), Tree (Barnes-Hut)
+[2026-03-20 21:52:54.391] [info] Step 100/1000 — E_drift=6.62e-02, |P|=1408.932469, tree=0.300ms, force=0.100ms, integrate=0.000ms, total=0.400ms
+[2026-03-20 21:52:55.026] [info] Step 200/1000 — E_drift=2.59e-01, |P|=1408.924508, tree=0.300ms, force=0.000ms, integrate=0.100ms, total=0.400ms
+[2026-03-20 21:52:55.650] [info] Step 300/1000 — E_drift=4.59e-01, |P|=1408.916586, tree=0.300ms, force=0.000ms, integrate=0.000ms, total=0.300ms
+[2026-03-20 21:52:56.269] [info] Step 400/1000 — E_drift=6.36e-01, |P|=1408.908743, tree=0.400ms, force=0.000ms, integrate=0.000ms, total=0.400ms
+[2026-03-20 21:52:56.904] [info] Step 500/1000 — E_drift=7.85e-01, |P|=1408.900941, tree=0.300ms, force=0.100ms, integrate=0.000ms, total=0.400ms
+[2026-03-20 21:52:57.533] [info] Step 600/1000 — E_drift=9.10e-01, |P|=1408.893242, tree=0.200ms, force=0.200ms, integrate=0.100ms, total=0.500ms
+[2026-03-20 21:52:58.155] [info] Step 700/1000 — E_drift=1.02e+00, |P|=1408.885642, tree=0.300ms, force=0.100ms, integrate=0.000ms, total=0.400ms
+[2026-03-20 21:52:58.791] [info] Step 800/1000 — E_drift=1.10e+00, |P|=1408.878056, tree=0.300ms, force=0.100ms, integrate=0.000ms, total=0.400ms
+[2026-03-20 21:52:59.432] [info] Step 900/1000 — E_drift=1.18e+00, |P|=1408.870515, tree=0.300ms, force=0.000ms, integrate=0.000ms, total=0.300ms
+[2026-03-20 21:53:00.063] [info] Step 1000/1000 — E_drift=1.24e+00, |P|=1408.863028, tree=0.300ms, force=0.000ms, integrate=0.100ms, total=0.400ms
+[2026-03-20 21:53:00.101] [info] Finished. Final energy drift: 1.244449e+00
+[2026-03-20 21:53:00.102] [info] Final |momentum|: 1.408863e+03
+
+[2026-03-20 21:53:15.974] [info] Simulation initialized: 10000 particles, Plummer Sphere, Leapfrog (KDK), GPU BVH (LBVH), Tree (Barnes-Hut)
+[2026-03-20 21:53:16.505] [info] Step 100/1000 — E_drift=8.00e-13, |P|=1640.016707, tree=0.500ms, force=0.100ms, integrate=0.100ms, total=0.700ms
+[2026-03-20 21:53:17.058] [info] Step 200/1000 — E_drift=1.86e-11, |P|=1640.014493, tree=0.200ms, force=0.200ms, integrate=0.000ms, total=0.400ms
+[2026-03-20 21:53:17.610] [info] Step 300/1000 — E_drift=3.16e-11, |P|=1640.012328, tree=0.500ms, force=0.100ms, integrate=0.000ms, total=0.600ms
+[2026-03-20 21:53:18.155] [info] Step 400/1000 — E_drift=7.47e-11, |P|=1640.010171, tree=0.300ms, force=0.000ms, integrate=0.000ms, total=0.300ms
+[2026-03-20 21:53:18.724] [info] Step 500/1000 — E_drift=1.30e-10, |P|=1640.008048, tree=0.300ms, force=0.100ms, integrate=0.100ms, total=0.500ms
+[2026-03-20 21:53:19.307] [info] Step 600/1000 — E_drift=1.99e-10, |P|=1640.005953, tree=0.200ms, force=0.000ms, integrate=0.000ms, total=0.200ms
+[2026-03-20 21:53:19.884] [info] Step 700/1000 — E_drift=2.66e-10, |P|=1640.003870, tree=0.300ms, force=0.000ms, integrate=0.000ms, total=0.300ms
+[2026-03-20 21:53:20.489] [info] Step 800/1000 — E_drift=3.18e-10, |P|=1640.001817, tree=0.300ms, force=0.000ms, integrate=0.000ms, total=0.300ms
+[2026-03-20 21:53:21.098] [info] Step 900/1000 — E_drift=3.73e-10, |P|=1639.999808, tree=0.600ms, force=0.000ms, integrate=0.000ms, total=0.600ms
+[2026-03-20 21:53:21.692] [info] Step 1000/1000 — E_drift=4.45e-10, |P|=1639.997841, tree=0.200ms, force=0.100ms, integrate=0.000ms, total=0.300ms
+[2026-03-20 21:53:21.704] [info] Finished. Final energy drift: 4.447704e-10
+[2026-03-20 21:53:21.706] [info] Final |momentum|: 1.639998e+03
+
+[2026-03-20 21:53:50.713] [info] Simulation initialized: 25000 particles, Plummer Sphere, Leapfrog (KDK), GPU BVH (LBVH), Tree (Barnes-Hut)
+[2026-03-20 21:53:51.229] [info] Step 100/1000 — E_drift=4.03e-12, |P|=4804.145219, tree=0.300ms, force=0.000ms, integrate=0.000ms, total=0.300ms
+[2026-03-20 21:53:51.769] [info] Step 200/1000 — E_drift=1.63e-11, |P|=4804.144203, tree=0.500ms, force=0.000ms, integrate=0.000ms, total=0.500ms
+[2026-03-20 21:53:52.322] [info] Step 300/1000 — E_drift=5.21e-12, |P|=4804.142341, tree=0.300ms, force=0.000ms, integrate=0.000ms, total=0.300ms
+[2026-03-20 21:53:52.873] [info] Step 400/1000 — E_drift=3.01e-11, |P|=4804.140393, tree=0.500ms, force=0.000ms, integrate=0.000ms, total=0.500ms
+[2026-03-20 21:53:53.428] [info] Step 500/1000 — E_drift=1.39e-10, |P|=4804.138332, tree=0.300ms, force=0.000ms, integrate=0.000ms, total=0.300ms
+[2026-03-20 21:53:53.990] [info] Step 600/1000 — E_drift=1.23e-10, |P|=4804.137048, tree=0.500ms, force=0.100ms, integrate=0.000ms, total=0.600ms
+[2026-03-20 21:53:54.528] [info] Step 700/1000 — E_drift=1.08e-10, |P|=4804.135766, tree=0.400ms, force=0.000ms, integrate=0.100ms, total=0.500ms
+[2026-03-20 21:53:55.084] [info] Step 800/1000 — E_drift=9.71e-11, |P|=4804.134516, tree=0.400ms, force=0.100ms, integrate=0.000ms, total=0.500ms
+[2026-03-20 21:53:55.644] [info] Step 900/1000 — E_drift=8.51e-11, |P|=4804.133317, tree=0.400ms, force=0.100ms, integrate=0.100ms, total=0.600ms
+[2026-03-20 21:53:56.195] [info] Step 1000/1000 — E_drift=7.13e-11, |P|=4804.132198, tree=0.300ms, force=0.000ms, integrate=0.000ms, total=0.300ms
+[2026-03-20 21:53:56.206] [info] Finished. Final energy drift: 7.128010e-11
+[2026-03-20 21:53:56.208] [info] Final |momentum|: 4.804132e+03
+
+[2026-03-20 21:54:11.792] [info] Simulation initialized: 50000 particles, Plummer Sphere, Leapfrog (KDK), GPU BVH (LBVH), Tree (Barnes-Hut)
+[2026-03-20 21:54:12.327] [info] Step 100/1000 — E_drift=4.36e-12, |P|=6518.400087, tree=0.700ms, force=0.000ms, integrate=0.000ms, total=0.700ms
+[2026-03-20 21:54:12.864] [info] Step 200/1000 — E_drift=1.29e-11, |P|=6518.400054, tree=0.500ms, force=0.100ms, integrate=0.000ms, total=0.600ms
+[2026-03-20 21:54:13.437] [info] Step 300/1000 — E_drift=2.06e-11, |P|=6518.400018, tree=0.500ms, force=0.100ms, integrate=0.100ms, total=0.700ms
+[2026-03-20 21:54:14.025] [info] Step 400/1000 — E_drift=2.20e-11, |P|=6518.400065, tree=0.400ms, force=0.100ms, integrate=0.100ms, total=0.600ms
+[2026-03-20 21:54:14.579] [info] Step 500/1000 — E_drift=2.34e-11, |P|=6518.400110, tree=0.300ms, force=0.100ms, integrate=0.000ms, total=0.400ms
+[2026-03-20 21:54:15.123] [info] Step 600/1000 — E_drift=2.48e-11, |P|=6518.400156, tree=0.400ms, force=0.000ms, integrate=0.000ms, total=0.400ms
+[2026-03-20 21:54:15.669] [info] Step 700/1000 — E_drift=2.62e-11, |P|=6518.400198, tree=0.300ms, force=0.100ms, integrate=0.000ms, total=0.400ms
+[2026-03-20 21:54:16.230] [info] Step 800/1000 — E_drift=2.75e-11, |P|=6518.400237, tree=0.600ms, force=0.000ms, integrate=0.000ms, total=0.600ms
+[2026-03-20 21:54:16.804] [info] Step 900/1000 — E_drift=2.72e-11, |P|=6518.400138, tree=0.300ms, force=0.100ms, integrate=0.000ms, total=0.400ms
+[2026-03-20 21:54:17.358] [info] Step 1000/1000 — E_drift=2.25e-11, |P|=6518.399631, tree=0.500ms, force=0.000ms, integrate=0.000ms, total=0.500ms
+[2026-03-20 21:54:17.372] [info] Finished. Final energy drift: 2.251313e-11
+[2026-03-20 21:54:17.373] [info] Final |momentum|: 6.518400e+03
+
+[2026-03-20 21:54:39.485] [info] Simulation initialized: 100000 particles, Plummer Sphere, Leapfrog (KDK), GPU BVH (LBVH), Tree (Barnes-Hut)
+[2026-03-20 21:54:40.057] [info] Step 100/1000 — E_drift=1.38e-13, |P|=34603.040611, tree=0.400ms, force=0.100ms, integrate=0.000ms, total=0.500ms
+[2026-03-20 21:54:40.700] [info] Step 200/1000 — E_drift=5.88e-13, |P|=34603.041150, tree=0.400ms, force=0.100ms, integrate=0.000ms, total=0.500ms
+[2026-03-20 21:54:41.339] [info] Step 300/1000 — E_drift=2.94e-11, |P|=34603.041596, tree=0.400ms, force=0.000ms, integrate=0.100ms, total=0.500ms
+[2026-03-20 21:54:41.953] [info] Step 400/1000 — E_drift=6.70e-11, |P|=34603.042053, tree=0.500ms, force=0.000ms, integrate=0.000ms, total=0.500ms
+[2026-03-20 21:54:42.607] [info] Step 500/1000 — E_drift=8.17e-11, |P|=34603.042596, tree=0.400ms, force=0.100ms, integrate=0.000ms, total=0.500ms
+[2026-03-20 21:54:43.230] [info] Step 600/1000 — E_drift=8.36e-11, |P|=34603.043277, tree=0.500ms, force=0.000ms, integrate=0.000ms, total=0.500ms
+[2026-03-20 21:54:43.886] [info] Step 700/1000 — E_drift=8.50e-11, |P|=34603.043420, tree=0.500ms, force=0.100ms, integrate=0.000ms, total=0.600ms
+[2026-03-20 21:54:44.516] [info] Step 800/1000 — E_drift=8.37e-11, |P|=34603.043127, tree=0.700ms, force=0.100ms, integrate=0.100ms, total=0.900ms
+[2026-03-20 21:54:45.124] [info] Step 900/1000 — E_drift=8.19e-11, |P|=34603.041112, tree=0.500ms, force=0.000ms, integrate=0.000ms, total=0.500ms
+[2026-03-20 21:54:45.748] [info] Step 1000/1000 — E_drift=1.21e-10, |P|=34603.039520, tree=0.500ms, force=0.200ms, integrate=0.000ms, total=0.700ms
+[2026-03-20 21:54:45.762] [info] Finished. Final energy drift: 1.206651e-10
+[2026-03-20 21:54:45.763] [info] Final |momentum|: 3.460304e+04

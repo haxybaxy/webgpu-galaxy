@@ -198,6 +198,17 @@ void wgpuPollEvents([[maybe_unused]] WGPUDevice device,
 #endif
 }
 
+void flushGpuQueue(WGPUDevice device, WGPUQueue queue) {
+    bool done = false;
+    wgpuQueueOnSubmittedWorkDone(
+        queue,
+        [](WGPUQueueWorkDoneStatus, void *ud) { *static_cast<bool *>(ud) = true; },
+        &done);
+    while (!done) {
+        wgpuPollEvents(device, true);
+    }
+}
+
 Buffer::Buffer()
     : m_buffer(nullptr), m_device(nullptr), m_usage(0), m_size(0), m_capacity(0) {}
 
@@ -258,7 +269,7 @@ void Buffer::upload(WGPUQueue queue, void *begin, size_t bytes, bool waitForComp
             [](WGPUQueueWorkDoneStatus, void *ud) { *static_cast<bool *>(ud) = true; },
             &uploadDone);
         while (!uploadDone) {
-            wgpuPollEvents(m_device, false);
+            wgpuPollEvents(m_device, true);
         }
     }
 }

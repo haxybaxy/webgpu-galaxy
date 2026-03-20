@@ -299,7 +299,17 @@ static void runHeadless(const Config &config) {
     for (int step = 0; step < config.maxSteps; step++) {
         simulation.step(device, queue, config.dt, config.softening,
                         config.theta);
+#ifdef __EMSCRIPTEN__
+        // Flush GPU queue every 4 steps to prevent command buffer
+        // accumulation that starves the macOS WindowServer compositor
+        if ((step + 1) % 4 == 0) {
+            wgpu_utils::flushGpuQueue(device, queue);
+        } else {
+            wgpuPollEvents(device, true);
+        }
+#else
         wgpuPollEvents(device, true);
+#endif
         simTime += config.dt;
 
         const StepTiming &timing = simulation.getLastTiming();
@@ -330,9 +340,11 @@ static void runHeadless(const Config &config) {
         }
 
         if (isProgressStep) {
-            spdlog::info("Step {}/{} — E_drift={:.2e}, |P|={:.6f}",
+            spdlog::info("Step {}/{} — E_drift={:.2e}, |P|={:.6f}, tree={:.3f}ms, force={:.3f}ms, integrate={:.3f}ms, total={:.3f}ms",
                          step + 1, config.maxSteps, lastDiag.energyDrift,
-                         lastDiag.momentumMagnitude);
+                         lastDiag.momentumMagnitude,
+                         timing.treeBuildMs, timing.forceMs, timing.integrateMs,
+                         timing.treeBuildMs + timing.forceMs + timing.integrateMs);
         }
     }
 
