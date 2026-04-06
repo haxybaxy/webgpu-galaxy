@@ -298,11 +298,11 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         let boundsMin = dequantize(node.quantMin, bMin, bRange);
         let boundsMax = dequantize(node.quantMax, bMin, bRange);
         let extent = boundsMax - boundsMin;
-        let maxExtent = max(extent.x, max(extent.y, extent.z));
+        let halfExtent = max(extent.x, max(extent.y, extent.z)) * 0.5;
 
         let isLeaf = (node.left < 0 && node.right < 0);
 
-        if (isLeaf || (maxExtent * maxExtent / distSq < thetaSq)) {
+        if (isLeaf || (halfExtent * halfExtent / distSq < thetaSq)) {
             if (mass > 0.0 && distSq > softSq * 0.01) {
                 let invDist = inverseSqrt(distSq);
                 let invDist3 = invDist * invDist * invDist;
@@ -851,7 +851,7 @@ void Simulation::initialize(WGPUDevice device, WGPUQueue queue,
                        WGPUBufferUsage_Storage | WGPUBufferUsage_CopyDst,
                        numParticles_ * sizeof(glm::vec4));
     accelerations_.initialize(
-        device, WGPUBufferUsage_Storage | WGPUBufferUsage_CopyDst,
+        device, WGPUBufferUsage_Storage | WGPUBufferUsage_CopyDst | WGPUBufferUsage_CopySrc,
         numParticles_ * sizeof(glm::vec4));
 
     positions_.upload(queue, cpuPositions_.data(),
@@ -958,6 +958,41 @@ void Simulation::ensureBindGroupsCached(WGPUDevice device) {
     }
 
     cachedBGParticleCount_ = numParticles_;
+}
+
+void Simulation::debugDumpTree(WGPUDevice device, WGPUQueue queue) {
+    if (treeMethod_ != TreeMethod::GPU) return;
+    uint32_t N = static_cast<uint32_t>(numParticles_);
+    uint32_t nc = 2 * N - 1;
+    size_t treeSz = nc * sizeof(BVHNodeGPU);
+
+    WGPUBufferDescriptor sd{};
+    sd.size = treeSz;
+    sd.usage = WGPUBufferUsage_CopyDst | WGPUBufferUsage_MapRead;
+    sd.mappedAtCreation = false;
+    WGPUBuffer staging = wgpuDeviceCreateBuffer(device, &sd);
+
+    WGPUCommandEncoder enc = wgpu_utils::createCommandEncoder(device);
+    wgpuCommandEncoderCopyBufferToBuffer(enc, gpuTreeBuilder_.getBvhNodesBuffer(), 0, staging, 0, treeSz);
+    wgpu_utils::finishCommandEncoder(queue, enc);
+
+    const void *data = wgpu_utils::mapBufferSync(device, staging, treeSz);
+    if (data) {
+        auto *nodes = reinterpret_cast<const BVHNodeGPU*>(data);
+        for (uint32_t n = 0; n < std::min(nc, 20u); n++) {
+            bool isInt = n < N - 1;
+            spdlog::info("  n[{}]{}: COM=({:.3f},{:.3f},{:.3f},m={:.3f}) L={} R={} P={}",
+                n, isInt ? "I" : "L",
+                nodes[n].centerOfMass.x, nodes[n].centerOfMass.y,
+                nodes[n].centerOfMass.z, nodes[n].centerOfMass.w,
+                nodes[n].left, nodes[n].right, nodes[n].parent);
+        }
+        wgpuBufferUnmap(staging);
+    } else {
+        spdlog::error("Tree readback failed!");
+    }
+    wgpuBufferDestroy(staging);
+    wgpuBufferRelease(staging);
 }
 
 // ============================================================

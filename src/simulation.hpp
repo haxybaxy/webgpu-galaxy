@@ -32,6 +32,7 @@ public:
     ForceMethod getForceMethod() const { return forceMethod_; }
 
     const StepTiming &getLastTiming() const { return lastTiming_; }
+    void debugDumpTree(WGPUDevice device, WGPUQueue queue);
 
 private:
     void initParticles(const Config &config);

@@ -374,12 +374,14 @@ struct Params {
 
 struct BVHNode {
     centerOfMass: vec4f,
-    boundsMin: vec4f,
-    boundsMax: vec4f,
+    quantMin: u32,
+    quantMax: u32,
     left: i32,
     right: i32,
     parent: i32,
     particleIdx: i32,
+    _pad0: u32,
+    _pad1: u32,
 }
 
 @group(0) @binding(0) var<uniform> params: Params;
@@ -441,16 +443,16 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     }
     let split = idx + s * d + min(d, 0);
 
-    // Assign children
-    let leftIdx = select(split + N - 1, split, min(idx, j) == split);
-    let rightIdx = select(split + N, split + 1, max(idx, j) == split + 1);
+    // Assign children: single-key side → leaf, multi-key side → internal
+    let leftIdx = select(split, split + N - 1, min(idx, j) == split);
+    let rightIdx = select(split + 1, split + N, max(idx, j) == split + 1);
 
     bvhNodes[idx].left = i32(leftIdx);
     bvhNodes[idx].right = i32(rightIdx);
     bvhNodes[idx].particleIdx = -1;
     bvhNodes[idx].centerOfMass = vec4f(0.0);
-    bvhNodes[idx].boundsMin = vec4f(1e30);
-    bvhNodes[idx].boundsMax = vec4f(-1e30);
+    bvhNodes[idx].quantMin = 0x3FFFFFFFu;  // all axes at max (1023)
+    bvhNodes[idx].quantMax = 0u;           // all axes at min (0)
 
     // Set parent pointers for children
     bvhNodes[leftIdx].parent = idx;
@@ -517,7 +519,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
     let q = quantize(pos.xyz, bMin, bRange);
 
-    bvhNodes[leafIdx].centerOfMass = vec4f(pos.xyz * pos.w, pos.w);
+    bvhNodes[leafIdx].centerOfMass = vec4f(pos.xyz, pos.w);
     bvhNodes[leafIdx].quantMin = q;
     bvhNodes[leafIdx].quantMax = q;
     bvhNodes[leafIdx].left = -1;
@@ -647,7 +649,7 @@ void GpuTreeBuilder::initialize(WGPUDevice device, uint32_t maxParticles) {
 
     // BVH nodes (quantized: 48 bytes per node)
     bvhNodes_.initialize(device,
-        WGPUBufferUsage_Storage | WGPUBufferUsage_CopyDst,
+        WGPUBufferUsage_Storage | WGPUBufferUsage_CopyDst | WGPUBufferUsage_CopySrc,
         maxNodes * kNodeSize);
 
     // Atomic counters for internal nodes
