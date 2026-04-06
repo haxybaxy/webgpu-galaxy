@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 enum class Scenario { TwoBody, PlummerSphere, RotatingDisk };
 enum class Integrator { Euler, Leapfrog };
@@ -21,6 +22,7 @@ struct Config {
     int maxSteps = 0;          // 0 = interactive (no limit)
     std::string exportPath;    // empty = no export
     bool headless = false;     // run without window (batch mode)
+    std::vector<double> screenshotTimes; // times at which to capture screenshots
 };
 
 Config parseArgs(int argc, char **argv);

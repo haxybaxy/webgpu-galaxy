@@ -1,5 +1,7 @@
 #include "config.hpp"
+#include <algorithm>
 #include <spdlog/spdlog.h>
+#include <sstream>
 #include <string>
 
 const char *scenarioName(Scenario s) {
@@ -82,6 +84,14 @@ Config parseArgs(int argc, char **argv) {
             if (val == "tree") cfg.forceMethod = ForceMethod::Tree;
             else if (val == "direct") cfg.forceMethod = ForceMethod::Direct;
             else spdlog::warn("Unknown force method '{}', using default", val);
+        } else if (arg == "--screenshot-at") {
+            std::string val = nextVal();
+            std::istringstream ss(val);
+            std::string token;
+            while (std::getline(ss, token, ',')) {
+                cfg.screenshotTimes.push_back(std::stod(token));
+            }
+            std::sort(cfg.screenshotTimes.begin(), cfg.screenshotTimes.end());
         } else if (arg == "--headless") {
             cfg.headless = true;
         } else if (arg == "--verbose") {

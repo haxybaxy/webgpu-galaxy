@@ -70,6 +70,10 @@ target_link_libraries(simulation_lib PUBLIC wgpu_utils octree_lib gpu_tree_build
 add_library(particle_renderer_lib particle_renderer.cpp particle_renderer.hpp)
 target_link_libraries(particle_renderer_lib PUBLIC wgpu_utils glm::glm spdlog)
 
+# screenshot library
+add_library(screenshot_lib screenshot.cpp screenshot.hpp)
+target_link_libraries(screenshot_lib PUBLIC wgpu_utils particle_renderer_lib glm::glm spdlog)
+
 # Main executable
 add_executable(galaxysim main.cpp)
 set_target_properties(galaxysim PROPERTIES
@@ -89,6 +93,7 @@ target_link_libraries(galaxysim PRIVATE
     gpu_tree_builder_lib
     simulation_lib
     particle_renderer_lib
+    screenshot_lib
     config_lib
     diagnostics_lib
     exporter_lib
