@@ -31,12 +31,6 @@ public:
     TreeMethod getTreeMethod() const { return treeMethod_; }
     ForceMethod getForceMethod() const { return forceMethod_; }
 
-    const std::vector<glm::vec4> &getCpuPositions() const {
-        return cpuPositions_;
-    }
-    const std::vector<glm::vec4> &getCpuVelocities() const {
-        return cpuVelocities_;
-    }
     const StepTiming &getLastTiming() const { return lastTiming_; }
 
 private:
@@ -100,6 +94,15 @@ private:
     // BVH force traversal
     WGPUComputePipeline bvhForcePipeline_ = nullptr;
     WGPUBindGroupLayout bvhForceBindGroupLayout_ = nullptr;
+
+    // Cached bind groups (GPU tree path)
+    WGPUBindGroup cachedKickBG_ = nullptr;
+    WGPUBindGroup cachedDriftBG_ = nullptr;
+    WGPUBindGroup cachedBvhForceBG_ = nullptr;
+    int cachedBGParticleCount_ = 0;
+
+    void invalidateBindGroups();
+    void ensureBindGroupsCached(WGPUDevice device);
 
     bool pipelinesCreated_ = false;
 };

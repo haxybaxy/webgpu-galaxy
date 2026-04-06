@@ -26,4 +26,10 @@ private:
     WGPUTexture depthTexture_ = nullptr;
     WGPUTextureFormat surfaceFormat_;
     bool initialized_ = false;
+
+    // Cached bind group
+    WGPUBindGroup cachedBindGroup_ = nullptr;
+    WGPUBuffer cachedPosBuffer_ = nullptr;
+    WGPUBuffer cachedColorBuffer_ = nullptr;
+    int cachedParticleCount_ = 0;
 };

@@ -32,9 +32,9 @@ Backend selection: `-DWEBGPU_BACKEND=WGPU` (default) or `DAWN` or `EMSCRIPTEN`.
 
 ## Architecture
 
-### CPU-GPU Hybrid Dual-Track
+### GPU-Primary Architecture
 
-The core design runs **equivalent physics on both CPU and GPU in parallel every step**. The CPU maintains mirror arrays (`cpuPositions_`, `cpuVelocities_`, `cpuAccelerations_`) that track GPU state. This avoids expensive GPU readbacks — the CPU mirror is used for octree construction and diagnostics.
+All physics runs on the GPU. The CPU tree path reads back positions via staging buffers when it needs to build an octree. Diagnostics always use GPU readback. Bind groups are cached and only recreated when particle count changes.
 
 ### Simulation Step (KDK Leapfrog)
 
@@ -70,7 +70,7 @@ Particles are rendered as instanced billboard quads (6 vertices each) with addit
 
 | File | Role |
 |------|------|
-| `simulation.cpp` | Physics engine: shaders, scenarios, integrators, CPU-GPU step logic |
+| `simulation.cpp` | Physics engine: shaders, scenarios, integrators, GPU step logic |
 | `octree.cpp` | CPU octree: recursive insert, COM propagation, flatten to GPU layout |
 | `particle_renderer.cpp` | WebGPU render pipeline with embedded WGSL vertex/fragment shader |
 | `main.cpp` | Application class (interactive) + `runHeadless()` (batch) |
@@ -90,6 +90,20 @@ struct OctreeNode {
 
 The GPU force shader traverses this with an explicit stack (depth 64) using the Barnes-Hut opening criterion: `halfWidth² / distSq < θ²`.
 
+### BVHNodeGPU Layout (48 bytes, quantized)
+
+```cpp
+struct BVHNodeGPU {
+    glm::vec4 centerOfMass;  // xyz = COM, w = mass
+    uint32_t quantMin;       // 10-bit per axis: x(10)|y(10)|z(10)|pad(2)
+    uint32_t quantMax;       // 10-bit per axis: x(10)|y(10)|z(10)|pad(2)
+    int32_t left, right, parent, particleIdx;
+    uint32_t _pad[2];
+};
+```
+
+Bounds are quantized relative to the root AABB (stored in `bboxResult` buffer). The force shader dequantizes at traversal time. 25% smaller than unquantized (48 vs 64 bytes).
+
 ### Params Uniform Buffer Layout (32 bytes)
 
 ```
@@ -108,5 +122,5 @@ This struct must match between C++ (`alignas(16)`) and WGSL exactly.
 - WebGPU C API throughout (raw `WGPUDevice`, `WGPUBuffer`, etc.) — no C++ wrapper libraries
 - Supports native (wgpu/Dawn) and WASM (Emscripten) from the same CMakeLists.txt
 - Each source file is built as its own static library in CMake, then linked into the final executable
-- Bind groups are created fresh each frame (no caching)
+- Bind groups are cached and reused; only recreated when particle count changes
 - `Buffer::upload()` auto-resizes if capacity is exceeded

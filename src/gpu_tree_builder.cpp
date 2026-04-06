@@ -157,45 +157,206 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 }
 )";
 
-// --- Bitonic sort (key-value on mortonCodes/sortIndices) ---
-static const char *kBitonicSortShader = R"(
-struct SortParams {
-    k: u32,
-    j: u32,
-    paddedN: u32,
+// --- Radix sort: histogram (per-workgroup digit counts) ---
+static const char *kRadixHistogramShader = R"(
+struct RadixParams {
+    numElements: u32,
+    bitOffset:   u32,
+    numWorkgroups: u32,
+    _pad: u32,
 }
 
-@group(0) @binding(0) var<uniform> sortParams: SortParams;
-@group(0) @binding(1) var<storage, read_write> keys: array<u32>;
-@group(0) @binding(2) var<storage, read_write> values: array<u32>;
+@group(0) @binding(0) var<uniform> params: RadixParams;
+@group(0) @binding(1) var<storage, read> keysIn: array<u32>;
+@group(0) @binding(2) var<storage, read_write> histogram: array<u32>;
+
+var<workgroup> localHist: array<atomic<u32>, 256>;
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3u) {
-    let i = gid.x;
-    if (i >= sortParams.paddedN) { return; }
+fn main(@builtin(local_invocation_id) lid: vec3u,
+        @builtin(workgroup_id) wid: vec3u) {
+    let localId = lid.x;
+    let wgId = wid.x;
 
-    let j = sortParams.j;
-    let k = sortParams.k;
+    // Clear local histogram
+    atomicStore(&localHist[localId], 0u);
+    workgroupBarrier();
 
-    let partner = i ^ j;
-    if (partner <= i) { return; }
-    if (partner >= sortParams.paddedN) { return; }
+    // Each thread processes 4 elements
+    let base = wgId * 1024u;
+    for (var t = 0u; t < 4u; t = t + 1u) {
+        let idx = base + t * 256u + localId;
+        if (idx < params.numElements) {
+            let digit = (keysIn[idx] >> params.bitOffset) & 0xFFu;
+            atomicAdd(&localHist[digit], 1u);
+        }
+    }
 
-    let keyI = keys[i];
-    let keyP = keys[partner];
-    let ascending = ((i & k) == 0u);
+    workgroupBarrier();
 
-    var doSwap = false;
-    if (ascending && keyI > keyP) { doSwap = true; }
-    if (!ascending && keyI < keyP) { doSwap = true; }
+    // Write local histogram to global in digit-major layout
+    let count = atomicLoad(&localHist[localId]);
+    histogram[localId * params.numWorkgroups + wgId] = count;
+}
+)";
 
-    if (doSwap) {
-        keys[i] = keyP;
-        keys[partner] = keyI;
-        let valI = values[i];
-        let valP = values[partner];
-        values[i] = valP;
-        values[partner] = valI;
+// --- Radix sort: Blelloch exclusive prefix scan (blocks of 512) ---
+static const char *kPrefixScanShader = R"(
+struct ScanParams {
+    numElements: u32,
+    _pad1: u32,
+    _pad2: u32,
+    _pad3: u32,
+}
+
+@group(0) @binding(0) var<uniform> params: ScanParams;
+@group(0) @binding(1) var<storage, read_write> data: array<u32>;
+@group(0) @binding(2) var<storage, read_write> blockSums: array<u32>;
+
+var<workgroup> temp: array<u32, 512>;
+
+@compute @workgroup_size(256)
+fn main(@builtin(local_invocation_id) lid: vec3u,
+        @builtin(workgroup_id) wid: vec3u) {
+    let localId = lid.x;
+    let wgId = wid.x;
+    let blockOffset = wgId * 512u;
+
+    // Load two elements per thread into shared memory
+    let ai = localId;
+    let bi = localId + 256u;
+    let globalAi = blockOffset + ai;
+    let globalBi = blockOffset + bi;
+
+    temp[ai] = select(0u, data[globalAi], globalAi < params.numElements);
+    temp[bi] = select(0u, data[globalBi], globalBi < params.numElements);
+
+    // Up-sweep (reduction) phase
+    var offset = 1u;
+    for (var d = 256u; d > 0u; d = d >> 1u) {
+        workgroupBarrier();
+        if (localId < d) {
+            let ai2 = offset * (2u * localId + 1u) - 1u;
+            let bi2 = offset * (2u * localId + 2u) - 1u;
+            temp[bi2] = temp[bi2] + temp[ai2];
+        }
+        offset = offset << 1u;
+    }
+
+    // Save block total and clear last element
+    workgroupBarrier();
+    if (localId == 0u) {
+        blockSums[wgId] = temp[511u];
+        temp[511u] = 0u;
+    }
+
+    // Down-sweep phase
+    for (var d = 1u; d < 512u; d = d << 1u) {
+        offset = offset >> 1u;
+        workgroupBarrier();
+        if (localId < d) {
+            let ai2 = offset * (2u * localId + 1u) - 1u;
+            let bi2 = offset * (2u * localId + 2u) - 1u;
+            let t = temp[ai2];
+            temp[ai2] = temp[bi2];
+            temp[bi2] = temp[bi2] + t;
+        }
+    }
+
+    workgroupBarrier();
+
+    // Write results back
+    if (globalAi < params.numElements) { data[globalAi] = temp[ai]; }
+    if (globalBi < params.numElements) { data[globalBi] = temp[bi]; }
+}
+)";
+
+// --- Radix sort: propagate block sums into scanned data ---
+static const char *kPrefixPropagateShader = R"(
+struct ScanParams {
+    numElements: u32,
+    _pad1: u32,
+    _pad2: u32,
+    _pad3: u32,
+}
+
+@group(0) @binding(0) var<uniform> params: ScanParams;
+@group(0) @binding(1) var<storage, read_write> data: array<u32>;
+@group(0) @binding(2) var<storage, read> blockSums: array<u32>;
+
+@compute @workgroup_size(256)
+fn main(@builtin(local_invocation_id) lid: vec3u,
+        @builtin(workgroup_id) wid: vec3u) {
+    let localId = lid.x;
+    let wgId = wid.x;
+    let blockOffset = wgId * 512u;
+    let sum = blockSums[wgId];
+
+    let ai = blockOffset + localId;
+    let bi = blockOffset + localId + 256u;
+
+    if (ai < params.numElements) { data[ai] = data[ai] + sum; }
+    if (bi < params.numElements) { data[bi] = data[bi] + sum; }
+}
+)";
+
+// --- Radix sort: scatter key-value pairs to sorted positions ---
+static const char *kRadixScatterShader = R"(
+struct RadixParams {
+    numElements: u32,
+    bitOffset:   u32,
+    numWorkgroups: u32,
+    _pad: u32,
+}
+
+@group(0) @binding(0) var<uniform> params: RadixParams;
+@group(0) @binding(1) var<storage, read> keysIn: array<u32>;
+@group(0) @binding(2) var<storage, read> valuesIn: array<u32>;
+@group(0) @binding(3) var<storage, read_write> keysOut: array<u32>;
+@group(0) @binding(4) var<storage, read_write> valuesOut: array<u32>;
+@group(0) @binding(5) var<storage, read> prefixSums: array<u32>;
+
+var<workgroup> sharedDigits: array<u32, 1024>;
+
+@compute @workgroup_size(256)
+fn main(@builtin(local_invocation_id) lid: vec3u,
+        @builtin(workgroup_id) wid: vec3u) {
+    let localId = lid.x;
+    let wgId = wid.x;
+    let base = wgId * 1024u;
+
+    // Load digits into shared memory (4 elements per thread)
+    for (var t = 0u; t < 4u; t = t + 1u) {
+        let localPos = t * 256u + localId;
+        let globalIdx = base + localPos;
+        if (globalIdx < params.numElements) {
+            sharedDigits[localPos] = (keysIn[globalIdx] >> params.bitOffset) & 0xFFu;
+        } else {
+            sharedDigits[localPos] = 0xFFFFu;  // sentinel
+        }
+    }
+
+    workgroupBarrier();
+
+    // For each of this thread's 4 elements, compute rank and scatter
+    for (var t = 0u; t < 4u; t = t + 1u) {
+        let localPos = t * 256u + localId;
+        let globalIdx = base + localPos;
+        if (globalIdx >= params.numElements) { continue; }
+
+        let digit = sharedDigits[localPos];
+
+        // Count elements before this one with the same digit (stable rank)
+        var rank = 0u;
+        for (var p = 0u; p < localPos; p = p + 1u) {
+            if (sharedDigits[p] == digit) {
+                rank = rank + 1u;
+            }
+        }
+
+        let dst = prefixSums[digit * params.numWorkgroups + wgId] + rank;
+        keysOut[dst] = keysIn[globalIdx];
+        valuesOut[dst] = valuesIn[globalIdx];
     }
 }
 )";
@@ -318,18 +479,27 @@ struct Params {
 
 struct BVHNode {
     centerOfMass: vec4f,
-    boundsMin: vec4f,
-    boundsMax: vec4f,
+    quantMin: u32,
+    quantMax: u32,
     left: i32,
     right: i32,
     parent: i32,
     particleIdx: i32,
+    _pad0: u32,
+    _pad1: u32,
 }
 
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var<storage, read> positions: array<vec4f>;
 @group(0) @binding(2) var<storage, read> sortIndices: array<u32>;
 @group(0) @binding(3) var<storage, read_write> bvhNodes: array<BVHNode>;
+@group(0) @binding(4) var<storage, read> bboxResult: array<vec4f>;
+
+fn quantize(p: vec3f, bMin: vec3f, bRange: vec3f) -> u32 {
+    let norm = clamp((p - bMin) / bRange, vec3f(0.0), vec3f(1.0));
+    let q = vec3u(norm * 1023.0);
+    return (q.x << 20u) | (q.y << 10u) | q.z;
+}
 
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3u) {
@@ -341,9 +511,15 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let origIdx = sortIndices[i];
     let pos = positions[origIdx];
 
+    let bMin = bboxResult[0].xyz;
+    let bMax = bboxResult[1].xyz;
+    let bRange = max(bMax - bMin, vec3f(1e-10));
+
+    let q = quantize(pos.xyz, bMin, bRange);
+
     bvhNodes[leafIdx].centerOfMass = vec4f(pos.xyz * pos.w, pos.w);
-    bvhNodes[leafIdx].boundsMin = vec4f(pos.xyz, 0.0);
-    bvhNodes[leafIdx].boundsMax = vec4f(pos.xyz, 0.0);
+    bvhNodes[leafIdx].quantMin = q;
+    bvhNodes[leafIdx].quantMax = q;
     bvhNodes[leafIdx].left = -1;
     bvhNodes[leafIdx].right = -1;
     bvhNodes[leafIdx].particleIdx = i32(origIdx);
@@ -363,12 +539,22 @@ struct Params {
 
 struct BVHNode {
     centerOfMass: vec4f,
-    boundsMin: vec4f,
-    boundsMax: vec4f,
+    quantMin: u32,
+    quantMax: u32,
     left: i32,
     right: i32,
     parent: i32,
     particleIdx: i32,
+    _pad0: u32,
+    _pad1: u32,
+}
+
+fn unpackQ(q: u32) -> vec3u {
+    return vec3u((q >> 20u) & 0x3FFu, (q >> 10u) & 0x3FFu, q & 0x3FFu);
+}
+
+fn packQ(v: vec3u) -> u32 {
+    return (v.x << 20u) | (v.y << 10u) | v.z;
 }
 
 @group(0) @binding(0) var<uniform> params: Params;
@@ -405,8 +591,11 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         }
         bvhNodes[current].centerOfMass = vec4f(com, totalMass);
 
-        bvhNodes[current].boundsMin = min(bvhNodes[leftIdx].boundsMin, bvhNodes[rightIdx].boundsMin);
-        bvhNodes[current].boundsMax = max(bvhNodes[leftIdx].boundsMax, bvhNodes[rightIdx].boundsMax);
+        // Integer min/max on quantized bounds (exact, no precision loss)
+        bvhNodes[current].quantMin = packQ(min(unpackQ(bvhNodes[leftIdx].quantMin),
+                                                unpackQ(bvhNodes[rightIdx].quantMin)));
+        bvhNodes[current].quantMax = packQ(max(unpackQ(bvhNodes[leftIdx].quantMax),
+                                                unpackQ(bvhNodes[rightIdx].quantMax)));
 
         current = bvhNodes[current].parent;
     }
@@ -456,25 +645,51 @@ void GpuTreeBuilder::initialize(WGPUDevice device, uint32_t maxParticles) {
         WGPUBufferUsage_Storage | WGPUBufferUsage_CopyDst,
         paddedMax * sizeof(uint32_t));
 
-    // BVH nodes
+    // BVH nodes (quantized: 48 bytes per node)
     bvhNodes_.initialize(device,
         WGPUBufferUsage_Storage | WGPUBufferUsage_CopyDst,
-        maxNodes * sizeof(BVHNodeGPU));
+        maxNodes * kNodeSize);
 
     // Atomic counters for internal nodes
     atomicCounters_.initialize(device,
         WGPUBufferUsage_Storage | WGPUBufferUsage_CopyDst,
         maxParticles * sizeof(uint32_t));
 
-    // Sort params: max steps for paddedMax
-    // For paddedMax, steps = sum_{k=2..paddedMax, powers of 2} of log2(k)
-    // = log2(paddedMax) * (log2(paddedMax)+1) / 2
-    uint32_t log2N = 0;
-    { uint32_t v = paddedMax; while (v > 1) { v >>= 1; log2N++; } }
-    uint32_t maxSortSteps = log2N * (log2N + 1) / 2;
-    sortParamsBuffer_.initialize(device,
+    // Radix sort: ping-pong buffers
+    mortonCodesAlt_.initialize(device,
+        WGPUBufferUsage_Storage | WGPUBufferUsage_CopyDst,
+        paddedMax * sizeof(uint32_t));
+
+    sortIndicesAlt_.initialize(device,
+        WGPUBufferUsage_Storage | WGPUBufferUsage_CopyDst,
+        paddedMax * sizeof(uint32_t));
+
+    // Radix sort: histogram (digit-major: 256 digits * maxHistWG workgroups)
+    uint32_t maxHistWG = (paddedMax + 1023) / 1024;
+    uint32_t maxHistElements = 256 * maxHistWG;
+    histogram_.initialize(device,
+        WGPUBufferUsage_Storage | WGPUBufferUsage_CopyDst,
+        maxHistElements * sizeof(uint32_t));
+
+    // Radix sort: block sums for 2-level prefix scan
+    uint32_t maxScanWG = (maxHistElements + 511) / 512;
+    blockSums_.initialize(device,
+        WGPUBufferUsage_Storage | WGPUBufferUsage_CopyDst,
+        maxScanWG * sizeof(uint32_t));
+
+    blockSumsOfSums_.initialize(device,
+        WGPUBufferUsage_Storage | WGPUBufferUsage_CopyDst,
+        sizeof(uint32_t));
+
+    // Radix sort: params (4 passes * 256-byte aligned entries)
+    radixParamsBuffer_.initialize(device,
         WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst,
-        maxSortSteps * 256);
+        4 * 256);
+
+    // Prefix scan params (2 entries * 256-byte aligned: level-1 and level-2)
+    scanParamsBuffer_.initialize(device,
+        WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst,
+        2 * 256);
 
     // Tiny uniform buffer for bbox pass 2 numWorkgroups
     numWorkgroupsBuffer_.initialize(device,
@@ -483,25 +698,17 @@ void GpuTreeBuilder::initialize(WGPUDevice device, uint32_t maxParticles) {
 
     createPipelines(device);
 
-    spdlog::info("GpuTreeBuilder initialized: maxParticles={}, paddedMax={}, maxNodes={}, maxSortSteps={}",
-                 maxParticles, paddedMax, maxNodes, maxSortSteps);
+    spdlog::info("GpuTreeBuilder initialized: maxParticles={}, paddedMax={}, maxNodes={}, maxHistWG={}",
+                 maxParticles, paddedMax, maxNodes, maxHistWG);
 }
 
 // ============================================================
-// Build sort params for bitonic sort
+// Build radix sort params (caches lastPaddedN_)
 // ============================================================
 
-void GpuTreeBuilder::buildSortParams(uint32_t paddedN) {
+void GpuTreeBuilder::buildRadixParams(uint32_t paddedN) {
     if (paddedN == lastPaddedN_) return;
     lastPaddedN_ = paddedN;
-
-    // Count total steps
-    numSortSteps_ = 0;
-    for (uint32_t k = 2; k <= paddedN; k <<= 1) {
-        for (uint32_t j = k >> 1; j > 0; j >>= 1) {
-            numSortSteps_++;
-        }
-    }
 }
 
 // ============================================================
@@ -584,17 +791,60 @@ void GpuTreeBuilder::createPipelines(WGPUDevice device) {
         mortonPipeline_ = makePipeline(device, mortonLayout_, kMortonShader, "Morton");
     }
 
-    // --- Bitonic sort: sortParams(uniform), keys(rw), values(rw) ---
+    // --- Radix histogram: radixParams(uniform,dynamic), keysIn(ro), histogram(rw) ---
+    {
+        WGPUBindGroupLayoutEntry entries[3] = {
+            storageEntry(0, WGPUBufferBindingType_Uniform),
+            storageEntry(1, WGPUBufferBindingType_ReadOnlyStorage),
+            storageEntry(2, WGPUBufferBindingType_Storage),
+        };
+        entries[0].buffer.hasDynamicOffset = true;
+        radixHistogramLayout_ = makeLayout(device, entries, 3);
+        radixHistogramPipeline_ = makePipeline(device, radixHistogramLayout_,
+                                                kRadixHistogramShader, "RadixHistogram");
+    }
+
+    // --- Prefix scan: scanParams(uniform,dynamic), data(rw), blockSums(rw) ---
     {
         WGPUBindGroupLayoutEntry entries[3] = {
             storageEntry(0, WGPUBufferBindingType_Uniform),
             storageEntry(1, WGPUBufferBindingType_Storage),
             storageEntry(2, WGPUBufferBindingType_Storage),
         };
-        // Mark binding 0 as having dynamic offset
         entries[0].buffer.hasDynamicOffset = true;
-        bitonicSortLayout_ = makeLayout(device, entries, 3);
-        bitonicSortPipeline_ = makePipeline(device, bitonicSortLayout_, kBitonicSortShader, "BitonicSort");
+        prefixScanLayout_ = makeLayout(device, entries, 3);
+        prefixScanPipeline_ = makePipeline(device, prefixScanLayout_,
+                                            kPrefixScanShader, "PrefixScan");
+    }
+
+    // --- Prefix propagate: scanParams(uniform,dynamic), data(rw), blockSums(ro) ---
+    {
+        WGPUBindGroupLayoutEntry entries[3] = {
+            storageEntry(0, WGPUBufferBindingType_Uniform),
+            storageEntry(1, WGPUBufferBindingType_Storage),
+            storageEntry(2, WGPUBufferBindingType_ReadOnlyStorage),
+        };
+        entries[0].buffer.hasDynamicOffset = true;
+        prefixPropagateLayout_ = makeLayout(device, entries, 3);
+        prefixPropagatePipeline_ = makePipeline(device, prefixPropagateLayout_,
+                                                 kPrefixPropagateShader, "PrefixPropagate");
+    }
+
+    // --- Radix scatter: radixParams(uniform,dynamic), keysIn(ro), valsIn(ro),
+    //                     keysOut(rw), valsOut(rw), prefixSums(ro) ---
+    {
+        WGPUBindGroupLayoutEntry entries[6] = {
+            storageEntry(0, WGPUBufferBindingType_Uniform),
+            storageEntry(1, WGPUBufferBindingType_ReadOnlyStorage),
+            storageEntry(2, WGPUBufferBindingType_ReadOnlyStorage),
+            storageEntry(3, WGPUBufferBindingType_Storage),
+            storageEntry(4, WGPUBufferBindingType_Storage),
+            storageEntry(5, WGPUBufferBindingType_ReadOnlyStorage),
+        };
+        entries[0].buffer.hasDynamicOffset = true;
+        radixScatterLayout_ = makeLayout(device, entries, 6);
+        radixScatterPipeline_ = makePipeline(device, radixScatterLayout_,
+                                              kRadixScatterShader, "RadixScatter");
     }
 
     // --- Karras: params(uniform), mortonCodes(ro), bvhNodes(rw), atomicCounters(rw) ---
@@ -609,15 +859,16 @@ void GpuTreeBuilder::createPipelines(WGPUDevice device) {
         karrasPipeline_ = makePipeline(device, karrasLayout_, kKarrasShader, "Karras");
     }
 
-    // --- Leaf init: params(uniform), positions(ro), sortIndices(ro), bvhNodes(rw) ---
+    // --- Leaf init: params(uniform), positions(ro), sortIndices(ro), bvhNodes(rw), bboxResult(ro) ---
     {
-        WGPUBindGroupLayoutEntry entries[4] = {
+        WGPUBindGroupLayoutEntry entries[5] = {
             storageEntry(0, WGPUBufferBindingType_Uniform),
             storageEntry(1, WGPUBufferBindingType_ReadOnlyStorage),
             storageEntry(2, WGPUBufferBindingType_ReadOnlyStorage),
             storageEntry(3, WGPUBufferBindingType_Storage),
+            storageEntry(4, WGPUBufferBindingType_ReadOnlyStorage),
         };
-        leafInitLayout_ = makeLayout(device, entries, 4);
+        leafInitLayout_ = makeLayout(device, entries, 5);
         leafInitPipeline_ = makePipeline(device, leafInitLayout_, kLeafInitShader, "LeafInit");
     }
 
@@ -633,7 +884,7 @@ void GpuTreeBuilder::createPipelines(WGPUDevice device) {
     }
 
     pipelinesCreated_ = true;
-    spdlog::info("GpuTreeBuilder: all 7 pipelines created");
+    spdlog::info("GpuTreeBuilder: all 10 pipelines created");
 }
 
 // ============================================================
@@ -644,21 +895,43 @@ void GpuTreeBuilder::prepareUploads(WGPUQueue queue, uint32_t numParticles) {
     uint32_t paddedN = getPaddedN(numParticles);
     uint32_t numWorkgroups = (numParticles + 255) / 256;
 
-    // Build and upload sort parameters (cached — only re-uploads when paddedN changes)
+    // Build and upload radix sort parameters (cached — only re-uploads when paddedN changes)
     if (paddedN != lastPaddedN_) {
-        buildSortParams(paddedN);
+        buildRadixParams(paddedN);
 
-        std::vector<uint8_t> sortData(numSortSteps_ * 256, 0);
-        uint32_t stepIdx = 0;
-        for (uint32_t k = 2; k <= paddedN; k <<= 1) {
-            for (uint32_t j = k >> 1; j > 0; j >>= 1) {
-                struct SortParams { uint32_t k, j, paddedN; uint32_t pad; };
-                SortParams sp{k, j, paddedN, 0};
-                std::memcpy(sortData.data() + stepIdx * 256, &sp, sizeof(sp));
-                stepIdx++;
-            }
+        uint32_t numHistWG = (paddedN + 1023) / 1024;
+
+        // Radix params: 4 passes, each at 256-byte offset
+        std::vector<uint8_t> radixData(4 * 256, 0);
+        for (uint32_t pass = 0; pass < 4; pass++) {
+            struct RadixParams {
+                uint32_t numElements;
+                uint32_t bitOffset;
+                uint32_t numWorkgroups;
+                uint32_t pad;
+            };
+            RadixParams rp{paddedN, pass * 8, numHistWG, 0};
+            std::memcpy(radixData.data() + pass * 256, &rp, sizeof(rp));
         }
-        sortParamsBuffer_.upload(queue, sortData.data(), sortData.size());
+        radixParamsBuffer_.upload(queue, radixData.data(), radixData.size());
+
+        // Scan params: 2 entries at 256-byte offsets
+        uint32_t histElements = 256 * numHistWG;
+        uint32_t numScanWG = (histElements + 511) / 512;
+
+        std::vector<uint8_t> scanData(2 * 256, 0);
+        {
+            struct ScanParams {
+                uint32_t numElements;
+                uint32_t pad[3];
+            };
+            ScanParams sp1{histElements, {0, 0, 0}};
+            std::memcpy(scanData.data(), &sp1, sizeof(sp1));
+
+            ScanParams sp2{numScanWG, {0, 0, 0}};
+            std::memcpy(scanData.data() + 256, &sp2, sizeof(sp2));
+        }
+        scanParamsBuffer_.upload(queue, scanData.data(), scanData.size());
     }
 
     // Upload numWorkgroups uniform for bbox pass 2
@@ -666,6 +939,195 @@ void GpuTreeBuilder::prepareUploads(WGPUQueue queue, uint32_t numParticles) {
         uint32_t nwg = numWorkgroups;
         numWorkgroupsBuffer_.upload(queue, &nwg, sizeof(uint32_t));
     }
+}
+
+// ============================================================
+// Bind Group Caching
+// ============================================================
+
+void GpuTreeBuilder::invalidateBindGroups() {
+    auto release = [](WGPUBindGroup &bg) {
+        if (bg) { wgpuBindGroupRelease(bg); bg = nullptr; }
+    };
+    release(cachedBboxPass1BG_);
+    release(cachedBboxPass2BG_);
+    release(cachedMortonBG_);
+    release(cachedScanBG1_);
+    release(cachedScanBG2_);
+    release(cachedPropagateBG_);
+    release(cachedRadixHistBG_[0]);
+    release(cachedRadixHistBG_[1]);
+    release(cachedRadixScatterBG_[0]);
+    release(cachedRadixScatterBG_[1]);
+    release(cachedKarrasBG_);
+    release(cachedLeafInitBG_);
+    release(cachedAggregateBG_);
+    cachedBGParticleCount_ = 0;
+    cachedPositionsBuffer_ = nullptr;
+    cachedParamsBuffer_ = nullptr;
+}
+
+void GpuTreeBuilder::ensureBindGroupsCached(WGPUDevice device,
+                                             WGPUBuffer positionsBuffer,
+                                             WGPUBuffer paramsBuffer,
+                                             uint32_t numParticles) {
+    if (cachedBGParticleCount_ == numParticles &&
+        cachedPositionsBuffer_ == positionsBuffer &&
+        cachedParamsBuffer_ == paramsBuffer) return;
+
+    invalidateBindGroups();
+
+    uint32_t paddedN = getPaddedN(numParticles);
+    uint32_t numNodes = 2 * numParticles - 1;
+    uint32_t numWorkgroups = (numParticles + 255) / 256;
+    uint32_t numHistWG = (paddedN + 1023) / 1024;
+    uint32_t histElements = 256 * numHistWG;
+    uint32_t histogramSize = histElements * sizeof(uint32_t);
+    uint32_t numScanWG = (histElements + 511) / 512;
+
+    auto makeBG = [&](WGPUBindGroupLayout layout,
+                      WGPUBindGroupEntry *entries, uint32_t count) -> WGPUBindGroup {
+        WGPUBindGroupDescriptor desc{};
+        desc.layout = layout;
+        desc.entryCount = count;
+        desc.entries = entries;
+        return wgpuDeviceCreateBindGroup(device, &desc);
+    };
+
+    auto entry = [](uint32_t binding, WGPUBuffer buffer, uint64_t size) -> WGPUBindGroupEntry {
+        WGPUBindGroupEntry e{};
+        e.binding = binding;
+        e.buffer = buffer;
+        e.size = size;
+        return e;
+    };
+
+    // Bbox pass 1
+    {
+        WGPUBindGroupEntry e[3] = {
+            entry(0, paramsBuffer, 32),
+            entry(1, positionsBuffer, numParticles * 16),
+            entry(2, bboxPartial_.get(), numWorkgroups * 2 * 16),
+        };
+        cachedBboxPass1BG_ = makeBG(bboxPass1Layout_, e, 3);
+    }
+
+    // Bbox pass 2
+    {
+        WGPUBindGroupEntry e[3] = {
+            entry(0, bboxPartial_.get(), numWorkgroups * 2 * 16),
+            entry(1, bboxResult_.get(), 2 * 16),
+            entry(2, numWorkgroupsBuffer_.get(), sizeof(uint32_t)),
+        };
+        cachedBboxPass2BG_ = makeBG(bboxPass2Layout_, e, 3);
+    }
+
+    // Morton
+    {
+        WGPUBindGroupEntry e[5] = {
+            entry(0, paramsBuffer, 32),
+            entry(1, positionsBuffer, numParticles * 16),
+            entry(2, bboxResult_.get(), 2 * 16),
+            entry(3, mortonCodes_.get(), paddedN * 4),
+            entry(4, sortIndices_.get(), paddedN * 4),
+        };
+        cachedMortonBG_ = makeBG(mortonLayout_, e, 5);
+    }
+
+    // Scan BG1 (histogram -> blockSums)
+    {
+        WGPUBindGroupEntry e[3] = {
+            entry(0, scanParamsBuffer_.get(), 256),
+            entry(1, histogram_.get(), histogramSize),
+            entry(2, blockSums_.get(), numScanWG * 4),
+        };
+        cachedScanBG1_ = makeBG(prefixScanLayout_, e, 3);
+    }
+
+    // Scan BG2 (blockSums -> blockSumsOfSums)
+    {
+        WGPUBindGroupEntry e[3] = {
+            entry(0, scanParamsBuffer_.get(), 256),
+            entry(1, blockSums_.get(), numScanWG * 4),
+            entry(2, blockSumsOfSums_.get(), 4),
+        };
+        cachedScanBG2_ = makeBG(prefixScanLayout_, e, 3);
+    }
+
+    // Propagate
+    {
+        WGPUBindGroupEntry e[3] = {
+            entry(0, scanParamsBuffer_.get(), 256),
+            entry(1, histogram_.get(), histogramSize),
+            entry(2, blockSums_.get(), numScanWG * 4),
+        };
+        cachedPropagateBG_ = makeBG(prefixPropagateLayout_, e, 3);
+    }
+
+    // Radix histogram bind groups (2 variants: even/odd pass)
+    for (int p = 0; p < 2; p++) {
+        WGPUBuffer srcKeys = (p == 0) ? mortonCodes_.get() : mortonCodesAlt_.get();
+        WGPUBindGroupEntry e[3] = {
+            entry(0, radixParamsBuffer_.get(), 256),
+            entry(1, srcKeys, paddedN * 4),
+            entry(2, histogram_.get(), histogramSize),
+        };
+        cachedRadixHistBG_[p] = makeBG(radixHistogramLayout_, e, 3);
+    }
+
+    // Radix scatter bind groups (2 variants: even/odd pass)
+    for (int p = 0; p < 2; p++) {
+        WGPUBuffer srcKeys = (p == 0) ? mortonCodes_.get() : mortonCodesAlt_.get();
+        WGPUBuffer dstKeys = (p == 0) ? mortonCodesAlt_.get() : mortonCodes_.get();
+        WGPUBuffer srcVals = (p == 0) ? sortIndices_.get() : sortIndicesAlt_.get();
+        WGPUBuffer dstVals = (p == 0) ? sortIndicesAlt_.get() : sortIndices_.get();
+        WGPUBindGroupEntry e[6] = {
+            entry(0, radixParamsBuffer_.get(), 256),
+            entry(1, srcKeys, paddedN * 4),
+            entry(2, srcVals, paddedN * 4),
+            entry(3, dstKeys, paddedN * 4),
+            entry(4, dstVals, paddedN * 4),
+            entry(5, histogram_.get(), histogramSize),
+        };
+        cachedRadixScatterBG_[p] = makeBG(radixScatterLayout_, e, 6);
+    }
+
+    // Karras
+    {
+        WGPUBindGroupEntry e[4] = {
+            entry(0, paramsBuffer, 32),
+            entry(1, mortonCodes_.get(), paddedN * 4),
+            entry(2, bvhNodes_.get(), numNodes * kNodeSize),
+            entry(3, atomicCounters_.get(), (numParticles - 1) * 4),
+        };
+        cachedKarrasBG_ = makeBG(karrasLayout_, e, 4);
+    }
+
+    // Leaf init (includes bboxResult for quantization)
+    {
+        WGPUBindGroupEntry e[5] = {
+            entry(0, paramsBuffer, 32),
+            entry(1, positionsBuffer, numParticles * 16),
+            entry(2, sortIndices_.get(), paddedN * 4),
+            entry(3, bvhNodes_.get(), numNodes * kNodeSize),
+            entry(4, bboxResult_.get(), 2 * 16),
+        };
+        cachedLeafInitBG_ = makeBG(leafInitLayout_, e, 5);
+    }
+
+    // Aggregate
+    {
+        WGPUBindGroupEntry e[3] = {
+            entry(0, paramsBuffer, 32),
+            entry(1, bvhNodes_.get(), numNodes * kNodeSize),
+            entry(2, atomicCounters_.get(), (numParticles - 1) * 4),
+        };
+        cachedAggregateBG_ = makeBG(aggregateLayout_, e, 3);
+    }
+
+    cachedBGParticleCount_ = numParticles;
+    cachedPositionsBuffer_ = positionsBuffer;
+    cachedParamsBuffer_ = paramsBuffer;
 }
 
 // ============================================================
@@ -686,173 +1148,141 @@ void GpuTreeBuilder::recordTreeBuild(WGPUDevice device,
     wgpuCommandEncoderClearBuffer(encoder, atomicCounters_.get(), 0,
                                    (numParticles - 1) * sizeof(uint32_t));
 
-    // Helper to create bind groups
-    auto makeBG = [&](WGPUBindGroupLayout layout,
-                      std::initializer_list<std::tuple<uint32_t, WGPUBuffer, uint64_t, uint64_t>> bindings)
-                      -> WGPUBindGroup {
-        std::vector<WGPUBindGroupEntry> entries;
-        for (auto& [binding, buffer, offset, size] : bindings) {
-            WGPUBindGroupEntry e{};
-            e.binding = binding;
-            e.buffer = buffer;
-            e.offset = offset;
-            e.size = size;
-            entries.push_back(e);
-        }
-        WGPUBindGroupDescriptor desc{};
-        desc.layout = layout;
-        desc.entryCount = static_cast<uint32_t>(entries.size());
-        desc.entries = entries.data();
-        return wgpuDeviceCreateBindGroup(device, &desc);
-    };
+    // Ensure all bind groups are cached
+    ensureBindGroupsCached(device, positionsBuffer, paramsBuffer, numParticles);
 
     WGPUComputePassDescriptor passDesc{};
     passDesc.timestampWrites = nullptr;
 
     // ---- Pass 1: Bounding box reduction (per-workgroup) ----
     {
-        WGPUBindGroup bg = makeBG(bboxPass1Layout_, {
-            {0, paramsBuffer, 0, 32},
-            {1, positionsBuffer, 0, numParticles * 16},
-            {2, bboxPartial_.get(), 0, numWorkgroups * 2 * 16},
-        });
-
         WGPUComputePassEncoder pass = wgpuCommandEncoderBeginComputePass(encoder, &passDesc);
         wgpuComputePassEncoderSetPipeline(pass, bboxPass1Pipeline_);
-        wgpuComputePassEncoderSetBindGroup(pass, 0, bg, 0, nullptr);
+        wgpuComputePassEncoderSetBindGroup(pass, 0, cachedBboxPass1BG_, 0, nullptr);
         wgpuComputePassEncoderDispatchWorkgroups(pass, numWorkgroups, 1, 1);
         wgpuComputePassEncoderEnd(pass);
         wgpuComputePassEncoderRelease(pass);
-        wgpuBindGroupRelease(bg);
     }
 
     // ---- Pass 2: Bounding box final reduction ----
     {
-        WGPUBindGroup bg = makeBG(bboxPass2Layout_, {
-            {0, bboxPartial_.get(), 0, numWorkgroups * 2 * 16},
-            {1, bboxResult_.get(), 0, 2 * 16},
-            {2, numWorkgroupsBuffer_.get(), 0, sizeof(uint32_t)},
-        });
-
         WGPUComputePassEncoder pass = wgpuCommandEncoderBeginComputePass(encoder, &passDesc);
         wgpuComputePassEncoderSetPipeline(pass, bboxPass2Pipeline_);
-        wgpuComputePassEncoderSetBindGroup(pass, 0, bg, 0, nullptr);
+        wgpuComputePassEncoderSetBindGroup(pass, 0, cachedBboxPass2BG_, 0, nullptr);
         wgpuComputePassEncoderDispatchWorkgroups(pass, 1, 1, 1);
         wgpuComputePassEncoderEnd(pass);
         wgpuComputePassEncoderRelease(pass);
-        wgpuBindGroupRelease(bg);
     }
 
     // ---- Pass 3: Morton code computation ----
     {
-        WGPUBindGroup bg = makeBG(mortonLayout_, {
-            {0, paramsBuffer, 0, 32},
-            {1, positionsBuffer, 0, numParticles * 16},
-            {2, bboxResult_.get(), 0, 2 * 16},
-            {3, mortonCodes_.get(), 0, paddedN * 4},
-            {4, sortIndices_.get(), 0, paddedN * 4},
-        });
-
         WGPUComputePassEncoder pass = wgpuCommandEncoderBeginComputePass(encoder, &passDesc);
         wgpuComputePassEncoderSetPipeline(pass, mortonPipeline_);
-        wgpuComputePassEncoderSetBindGroup(pass, 0, bg, 0, nullptr);
+        wgpuComputePassEncoderSetBindGroup(pass, 0, cachedMortonBG_, 0, nullptr);
         wgpuComputePassEncoderDispatchWorkgroups(pass, paddedWorkgroups, 1, 1);
         wgpuComputePassEncoderEnd(pass);
         wgpuComputePassEncoderRelease(pass);
-        wgpuBindGroupRelease(bg);
     }
 
-    // ---- Pass 4: Bitonic sort (~153 steps for N=100K) ----
+    // ---- Pass 4: Radix sort (4 digit passes x 5 dispatches = 20 dispatches) ----
     {
-        // Create bind group with dynamic offset for sort params
-        WGPUBindGroupEntry entries[3] = {};
-        entries[0].binding = 0;
-        entries[0].buffer = sortParamsBuffer_.get();
-        entries[0].offset = 0;
-        entries[0].size = 256;  // each slot is 256-byte aligned
-        entries[1].binding = 1;
-        entries[1].buffer = mortonCodes_.get();
-        entries[1].offset = 0;
-        entries[1].size = paddedN * 4;
-        entries[2].binding = 2;
-        entries[2].buffer = sortIndices_.get();
-        entries[2].offset = 0;
-        entries[2].size = paddedN * 4;
+        uint32_t numHistWG = (paddedN + 1023) / 1024;
+        uint32_t histElements = 256 * numHistWG;
+        uint32_t histogramSize = histElements * sizeof(uint32_t);
+        uint32_t numScanWG = (histElements + 511) / 512;
 
-        WGPUBindGroupDescriptor bgDesc{};
-        bgDesc.layout = bitonicSortLayout_;
-        bgDesc.entryCount = 3;
-        bgDesc.entries = entries;
-        WGPUBindGroup sortBG = wgpuDeviceCreateBindGroup(device, &bgDesc);
+        for (uint32_t rpass = 0; rpass < 4; rpass++) {
+            uint32_t radixDynOffset = rpass * 256;
+            int pingPong = rpass % 2;
 
-        uint32_t sortWG = (paddedN + 255) / 256;
-        for (uint32_t step = 0; step < numSortSteps_; step++) {
-            uint32_t dynamicOffset = step * 256;
+            // 1. Clear histogram buffer
+            wgpuCommandEncoderClearBuffer(encoder, histogram_.get(), 0, histogramSize);
 
-            WGPUComputePassEncoder pass = wgpuCommandEncoderBeginComputePass(encoder, &passDesc);
-            wgpuComputePassEncoderSetPipeline(pass, bitonicSortPipeline_);
-            wgpuComputePassEncoderSetBindGroup(pass, 0, sortBG, 1, &dynamicOffset);
-            wgpuComputePassEncoderDispatchWorkgroups(pass, sortWG, 1, 1);
-            wgpuComputePassEncoderEnd(pass);
-            wgpuComputePassEncoderRelease(pass);
+            // 2. Histogram dispatch
+            {
+                WGPUComputePassEncoder p = wgpuCommandEncoderBeginComputePass(encoder, &passDesc);
+                wgpuComputePassEncoderSetPipeline(p, radixHistogramPipeline_);
+                wgpuComputePassEncoderSetBindGroup(p, 0, cachedRadixHistBG_[pingPong], 1, &radixDynOffset);
+                wgpuComputePassEncoderDispatchWorkgroups(p, numHistWG, 1, 1);
+                wgpuComputePassEncoderEnd(p);
+                wgpuComputePassEncoderRelease(p);
+            }
+
+            // 3. Prefix scan level 1
+            {
+                uint32_t scanDynOffset = 0;
+                WGPUComputePassEncoder p = wgpuCommandEncoderBeginComputePass(encoder, &passDesc);
+                wgpuComputePassEncoderSetPipeline(p, prefixScanPipeline_);
+                wgpuComputePassEncoderSetBindGroup(p, 0, cachedScanBG1_, 1, &scanDynOffset);
+                wgpuComputePassEncoderDispatchWorkgroups(p, numScanWG, 1, 1);
+                wgpuComputePassEncoderEnd(p);
+                wgpuComputePassEncoderRelease(p);
+            }
+
+            // 4. Prefix scan level 2
+            {
+                uint32_t scanDynOffset = 256;
+                WGPUComputePassEncoder p = wgpuCommandEncoderBeginComputePass(encoder, &passDesc);
+                wgpuComputePassEncoderSetPipeline(p, prefixScanPipeline_);
+                wgpuComputePassEncoderSetBindGroup(p, 0, cachedScanBG2_, 1, &scanDynOffset);
+                wgpuComputePassEncoderDispatchWorkgroups(p, 1, 1, 1);
+                wgpuComputePassEncoderEnd(p);
+                wgpuComputePassEncoderRelease(p);
+            }
+
+            // 5. Propagate block sums into histogram
+            {
+                uint32_t scanDynOffset = 0;
+                WGPUComputePassEncoder p = wgpuCommandEncoderBeginComputePass(encoder, &passDesc);
+                wgpuComputePassEncoderSetPipeline(p, prefixPropagatePipeline_);
+                wgpuComputePassEncoderSetBindGroup(p, 0, cachedPropagateBG_, 1, &scanDynOffset);
+                wgpuComputePassEncoderDispatchWorkgroups(p, numScanWG, 1, 1);
+                wgpuComputePassEncoderEnd(p);
+                wgpuComputePassEncoderRelease(p);
+            }
+
+            // 6. Scatter
+            {
+                WGPUComputePassEncoder p = wgpuCommandEncoderBeginComputePass(encoder, &passDesc);
+                wgpuComputePassEncoderSetPipeline(p, radixScatterPipeline_);
+                wgpuComputePassEncoderSetBindGroup(p, 0, cachedRadixScatterBG_[pingPong], 1, &radixDynOffset);
+                wgpuComputePassEncoderDispatchWorkgroups(p, numHistWG, 1, 1);
+                wgpuComputePassEncoderEnd(p);
+                wgpuComputePassEncoderRelease(p);
+            }
         }
-
-        wgpuBindGroupRelease(sortBG);
     }
 
     // ---- Pass 5: Karras tree construction (N-1 internal nodes) ----
     {
-        WGPUBindGroup bg = makeBG(karrasLayout_, {
-            {0, paramsBuffer, 0, 32},
-            {1, mortonCodes_.get(), 0, paddedN * 4},
-            {2, bvhNodes_.get(), 0, numNodes * 64},
-            {3, atomicCounters_.get(), 0, (numParticles - 1) * 4},
-        });
-
         uint32_t internalWG = (numParticles - 1 + 255) / 256;
         WGPUComputePassEncoder pass = wgpuCommandEncoderBeginComputePass(encoder, &passDesc);
         wgpuComputePassEncoderSetPipeline(pass, karrasPipeline_);
-        wgpuComputePassEncoderSetBindGroup(pass, 0, bg, 0, nullptr);
+        wgpuComputePassEncoderSetBindGroup(pass, 0, cachedKarrasBG_, 0, nullptr);
         wgpuComputePassEncoderDispatchWorkgroups(pass, internalWG, 1, 1);
         wgpuComputePassEncoderEnd(pass);
         wgpuComputePassEncoderRelease(pass);
-        wgpuBindGroupRelease(bg);
     }
 
     // ---- Pass 6: Leaf initialization ----
     {
-        WGPUBindGroup bg = makeBG(leafInitLayout_, {
-            {0, paramsBuffer, 0, 32},
-            {1, positionsBuffer, 0, numParticles * 16},
-            {2, sortIndices_.get(), 0, paddedN * 4},
-            {3, bvhNodes_.get(), 0, numNodes * 64},
-        });
-
         uint32_t leafWG = (numParticles + 255) / 256;
         WGPUComputePassEncoder pass = wgpuCommandEncoderBeginComputePass(encoder, &passDesc);
         wgpuComputePassEncoderSetPipeline(pass, leafInitPipeline_);
-        wgpuComputePassEncoderSetBindGroup(pass, 0, bg, 0, nullptr);
+        wgpuComputePassEncoderSetBindGroup(pass, 0, cachedLeafInitBG_, 0, nullptr);
         wgpuComputePassEncoderDispatchWorkgroups(pass, leafWG, 1, 1);
         wgpuComputePassEncoderEnd(pass);
         wgpuComputePassEncoderRelease(pass);
-        wgpuBindGroupRelease(bg);
     }
 
     // ---- Pass 7: Bottom-up aggregation ----
     {
-        WGPUBindGroup bg = makeBG(aggregateLayout_, {
-            {0, paramsBuffer, 0, 32},
-            {1, bvhNodes_.get(), 0, numNodes * 64},
-            {2, atomicCounters_.get(), 0, (numParticles - 1) * 4},
-        });
-
         uint32_t leafWG = (numParticles + 255) / 256;
         WGPUComputePassEncoder pass = wgpuCommandEncoderBeginComputePass(encoder, &passDesc);
         wgpuComputePassEncoderSetPipeline(pass, aggregatePipeline_);
-        wgpuComputePassEncoderSetBindGroup(pass, 0, bg, 0, nullptr);
+        wgpuComputePassEncoderSetBindGroup(pass, 0, cachedAggregateBG_, 0, nullptr);
         wgpuComputePassEncoderDispatchWorkgroups(pass, leafWG, 1, 1);
         wgpuComputePassEncoderEnd(pass);
         wgpuComputePassEncoderRelease(pass);
-        wgpuBindGroupRelease(bg);
     }
 }
