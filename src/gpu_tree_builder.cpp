@@ -301,6 +301,8 @@ fn main(@builtin(local_invocation_id) lid: vec3u,
 )";
 
 // --- Radix sort: scatter key-value pairs to sorted positions ---
+// Uses cooperative digit-owned ranking: each thread owns one digit value
+// and scans all 1024 elements left-to-right to assign stable ranks.
 static const char *kRadixScatterShader = R"(
 struct RadixParams {
     numElements: u32,
@@ -317,6 +319,7 @@ struct RadixParams {
 @group(0) @binding(5) var<storage, read> prefixSums: array<u32>;
 
 var<workgroup> sharedDigits: array<u32, 1024>;
+var<workgroup> sharedRanks: array<u32, 1024>;
 
 @compute @workgroup_size(256)
 fn main(@builtin(local_invocation_id) lid: vec3u,
@@ -325,35 +328,43 @@ fn main(@builtin(local_invocation_id) lid: vec3u,
     let wgId = wid.x;
     let base = wgId * 1024u;
 
-    // Load digits into shared memory (4 elements per thread)
+    // Phase 1: Load digits into shared memory (4 elements per thread)
     for (var t = 0u; t < 4u; t = t + 1u) {
         let localPos = t * 256u + localId;
         let globalIdx = base + localPos;
         if (globalIdx < params.numElements) {
             sharedDigits[localPos] = (keysIn[globalIdx] >> params.bitOffset) & 0xFFu;
         } else {
-            sharedDigits[localPos] = 0xFFFFu;  // sentinel
+            sharedDigits[localPos] = 256u;  // sentinel: no valid digit matches 256
         }
     }
 
     workgroupBarrier();
 
-    // For each of this thread's 4 elements, compute rank and scatter
+    // Phase 2: Cooperative digit-owned ranking
+    // Thread localId owns digit value localId. It scans all 1024 elements
+    // left-to-right, assigning sequential ranks to matching elements.
+    // Guarantees stability (left-to-right = input order) with no atomics
+    // and no write conflicts (each sharedRanks[p] written by exactly one thread).
+    let myDigit = localId;
+    var counter = 0u;
+    for (var p = 0u; p < 1024u; p = p + 1u) {
+        if (sharedDigits[p] == myDigit) {
+            sharedRanks[p] = counter;
+            counter = counter + 1u;
+        }
+    }
+
+    workgroupBarrier();
+
+    // Phase 3: Scatter using precomputed ranks
     for (var t = 0u; t < 4u; t = t + 1u) {
         let localPos = t * 256u + localId;
         let globalIdx = base + localPos;
         if (globalIdx >= params.numElements) { continue; }
 
         let digit = sharedDigits[localPos];
-
-        // Count elements before this one with the same digit (stable rank)
-        var rank = 0u;
-        for (var p = 0u; p < localPos; p = p + 1u) {
-            if (sharedDigits[p] == digit) {
-                rank = rank + 1u;
-            }
-        }
-
+        let rank = sharedRanks[localPos];
         let dst = prefixSums[digit * params.numWorkgroups + wgId] + rank;
         keysOut[dst] = keysIn[globalIdx];
         valuesOut[dst] = valuesIn[globalIdx];
@@ -374,14 +385,12 @@ struct Params {
 
 struct BVHNode {
     centerOfMass: vec4f,
-    quantMin: u32,
-    quantMax: u32,
+    boundsMin: vec4f,
+    boundsMax: vec4f,
     left: i32,
     right: i32,
     parent: i32,
     particleIdx: i32,
-    _pad0: u32,
-    _pad1: u32,
 }
 
 @group(0) @binding(0) var<uniform> params: Params;
@@ -451,8 +460,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     bvhNodes[idx].right = i32(rightIdx);
     bvhNodes[idx].particleIdx = -1;
     bvhNodes[idx].centerOfMass = vec4f(0.0);
-    bvhNodes[idx].quantMin = 0x3FFFFFFFu;  // all axes at max (1023)
-    bvhNodes[idx].quantMax = 0u;           // all axes at min (0)
+    bvhNodes[idx].boundsMin = vec4f(1e30, 1e30, 1e30, 0.0);
+    bvhNodes[idx].boundsMax = vec4f(-1e30, -1e30, -1e30, 0.0);
 
     // Set parent pointers for children
     bvhNodes[leftIdx].parent = idx;
@@ -481,27 +490,18 @@ struct Params {
 
 struct BVHNode {
     centerOfMass: vec4f,
-    quantMin: u32,
-    quantMax: u32,
+    boundsMin: vec4f,
+    boundsMax: vec4f,
     left: i32,
     right: i32,
     parent: i32,
     particleIdx: i32,
-    _pad0: u32,
-    _pad1: u32,
 }
 
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var<storage, read> positions: array<vec4f>;
 @group(0) @binding(2) var<storage, read> sortIndices: array<u32>;
 @group(0) @binding(3) var<storage, read_write> bvhNodes: array<BVHNode>;
-@group(0) @binding(4) var<storage, read> bboxResult: array<vec4f>;
-
-fn quantize(p: vec3f, bMin: vec3f, bRange: vec3f) -> u32 {
-    let norm = clamp((p - bMin) / bRange, vec3f(0.0), vec3f(1.0));
-    let q = vec3u(norm * 1023.0);
-    return (q.x << 20u) | (q.y << 10u) | q.z;
-}
 
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3u) {
@@ -513,15 +513,9 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let origIdx = sortIndices[i];
     let pos = positions[origIdx];
 
-    let bMin = bboxResult[0].xyz;
-    let bMax = bboxResult[1].xyz;
-    let bRange = max(bMax - bMin, vec3f(1e-10));
-
-    let q = quantize(pos.xyz, bMin, bRange);
-
     bvhNodes[leafIdx].centerOfMass = vec4f(pos.xyz, pos.w);
-    bvhNodes[leafIdx].quantMin = q;
-    bvhNodes[leafIdx].quantMax = q;
+    bvhNodes[leafIdx].boundsMin = vec4f(pos.xyz, 0.0);
+    bvhNodes[leafIdx].boundsMax = vec4f(pos.xyz, 0.0);
     bvhNodes[leafIdx].left = -1;
     bvhNodes[leafIdx].right = -1;
     bvhNodes[leafIdx].particleIdx = i32(origIdx);
@@ -541,22 +535,12 @@ struct Params {
 
 struct BVHNode {
     centerOfMass: vec4f,
-    quantMin: u32,
-    quantMax: u32,
+    boundsMin: vec4f,
+    boundsMax: vec4f,
     left: i32,
     right: i32,
     parent: i32,
     particleIdx: i32,
-    _pad0: u32,
-    _pad1: u32,
-}
-
-fn unpackQ(q: u32) -> vec3u {
-    return vec3u((q >> 20u) & 0x3FFu, (q >> 10u) & 0x3FFu, q & 0x3FFu);
-}
-
-fn packQ(v: vec3u) -> u32 {
-    return (v.x << 20u) | (v.y << 10u) | v.z;
 }
 
 @group(0) @binding(0) var<uniform> params: Params;
@@ -593,11 +577,9 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         }
         bvhNodes[current].centerOfMass = vec4f(com, totalMass);
 
-        // Integer min/max on quantized bounds (exact, no precision loss)
-        bvhNodes[current].quantMin = packQ(min(unpackQ(bvhNodes[leftIdx].quantMin),
-                                                unpackQ(bvhNodes[rightIdx].quantMin)));
-        bvhNodes[current].quantMax = packQ(max(unpackQ(bvhNodes[leftIdx].quantMax),
-                                                unpackQ(bvhNodes[rightIdx].quantMax)));
+        // Float min/max on AABB bounds
+        bvhNodes[current].boundsMin = vec4f(min(bvhNodes[leftIdx].boundsMin.xyz, bvhNodes[rightIdx].boundsMin.xyz), 0.0);
+        bvhNodes[current].boundsMax = vec4f(max(bvhNodes[leftIdx].boundsMax.xyz, bvhNodes[rightIdx].boundsMax.xyz), 0.0);
 
         current = bvhNodes[current].parent;
     }
@@ -647,7 +629,7 @@ void GpuTreeBuilder::initialize(WGPUDevice device, uint32_t maxParticles) {
         WGPUBufferUsage_Storage | WGPUBufferUsage_CopyDst,
         paddedMax * sizeof(uint32_t));
 
-    // BVH nodes (quantized: 48 bytes per node)
+    // BVH nodes (float32 bounds: 64 bytes per node)
     bvhNodes_.initialize(device,
         WGPUBufferUsage_Storage | WGPUBufferUsage_CopyDst | WGPUBufferUsage_CopySrc,
         maxNodes * kNodeSize);
@@ -861,16 +843,15 @@ void GpuTreeBuilder::createPipelines(WGPUDevice device) {
         karrasPipeline_ = makePipeline(device, karrasLayout_, kKarrasShader, "Karras");
     }
 
-    // --- Leaf init: params(uniform), positions(ro), sortIndices(ro), bvhNodes(rw), bboxResult(ro) ---
+    // --- Leaf init: params(uniform), positions(ro), sortIndices(ro), bvhNodes(rw) ---
     {
-        WGPUBindGroupLayoutEntry entries[5] = {
+        WGPUBindGroupLayoutEntry entries[4] = {
             storageEntry(0, WGPUBufferBindingType_Uniform),
             storageEntry(1, WGPUBufferBindingType_ReadOnlyStorage),
             storageEntry(2, WGPUBufferBindingType_ReadOnlyStorage),
             storageEntry(3, WGPUBufferBindingType_Storage),
-            storageEntry(4, WGPUBufferBindingType_ReadOnlyStorage),
         };
-        leafInitLayout_ = makeLayout(device, entries, 5);
+        leafInitLayout_ = makeLayout(device, entries, 4);
         leafInitPipeline_ = makePipeline(device, leafInitLayout_, kLeafInitShader, "LeafInit");
     }
 
@@ -1105,16 +1086,15 @@ void GpuTreeBuilder::ensureBindGroupsCached(WGPUDevice device,
         cachedKarrasBG_ = makeBG(karrasLayout_, e, 4);
     }
 
-    // Leaf init (includes bboxResult for quantization)
+    // Leaf init (float bounds, no bboxResult needed)
     {
-        WGPUBindGroupEntry e[5] = {
+        WGPUBindGroupEntry e[4] = {
             entry(0, paramsBuffer, 32),
             entry(1, positionsBuffer, numParticles * 16),
             entry(2, sortIndices_.get(), paddedN * 4),
             entry(3, bvhNodes_.get(), numNodes * kNodeSize),
-            entry(4, bboxResult_.get(), 2 * 16),
         };
-        cachedLeafInitBG_ = makeBG(leafInitLayout_, e, 5);
+        cachedLeafInitBG_ = makeBG(leafInitLayout_, e, 4);
     }
 
     // Aggregate

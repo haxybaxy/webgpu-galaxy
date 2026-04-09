@@ -90,19 +90,18 @@ struct OctreeNode {
 
 The GPU force shader traverses this with an explicit stack (depth 64) using the Barnes-Hut opening criterion: `halfWidth² / distSq < θ²`.
 
-### BVHNodeGPU Layout (48 bytes, quantized)
+### BVHNodeGPU Layout (64 bytes, float32 bounds)
 
 ```cpp
 struct BVHNodeGPU {
     glm::vec4 centerOfMass;  // xyz = COM, w = mass
-    uint32_t quantMin;       // 10-bit per axis: x(10)|y(10)|z(10)|pad(2)
-    uint32_t quantMax;       // 10-bit per axis: x(10)|y(10)|z(10)|pad(2)
+    glm::vec4 boundsMin;     // xyz = AABB min
+    glm::vec4 boundsMax;     // xyz = AABB max
     int32_t left, right, parent, particleIdx;
-    uint32_t _pad[2];
 };
 ```
 
-Bounds are quantized relative to the root AABB (stored in `bboxResult` buffer). The force shader dequantizes at traversal time. 25% smaller than unquantized (48 vs 64 bytes).
+Float32 bounds avoid quantization artifacts that caused force accuracy degradation in dense particle clusters. The BVH force shader uses a mass-adaptive opening criterion: `halfExtent = comToCornerRadius * (1 + 0.6 * log2(mass))`, which compensates for the BVH's deeper binary tree (log2 N vs octree's log8 N levels).
 
 ### Params Uniform Buffer Layout (32 bytes)
 

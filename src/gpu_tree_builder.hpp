@@ -7,14 +7,13 @@
 
 struct BVHNodeGPU {
     glm::vec4 centerOfMass;  // xyz = COM, w = mass
-    uint32_t quantMin;       // 10-bit per axis: x(10)|y(10)|z(10)|pad(2)
-    uint32_t quantMax;       // 10-bit per axis: x(10)|y(10)|z(10)|pad(2)
+    glm::vec4 boundsMin;     // xyz = AABB min, w = unused
+    glm::vec4 boundsMax;     // xyz = AABB max, w = unused
     int32_t left, right;
     int32_t parent, particleIdx;
-    uint32_t _pad[2];
 };
 
-static_assert(sizeof(BVHNodeGPU) == 48, "BVHNodeGPU must be 48 bytes");
+static_assert(sizeof(BVHNodeGPU) == 64, "BVHNodeGPU must be 64 bytes");
 
 class GpuTreeBuilder {
 public:
@@ -33,7 +32,7 @@ public:
     int getNodeCount(int N) const { return (N <= 0) ? 0 : 2 * N - 1; }
     uint32_t getPaddedN(uint32_t N) const;
     uint32_t getMaxParticles() const { return maxParticles_; }
-    static constexpr uint32_t kNodeSize = 48;
+    static constexpr uint32_t kNodeSize = 64;
 
 private:
     void createPipelines(WGPUDevice device);

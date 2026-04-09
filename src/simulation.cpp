@@ -229,7 +229,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 }
 )";
 
-// BVH force traversal shader (binary tree, quantized bounds)
+// BVH force traversal shader (binary tree, float32 bounds)
 static const char *kBvhForceShaderSource = R"(
 struct Params {
     dt: f32,
@@ -242,37 +242,25 @@ struct Params {
 
 struct BVHNode {
     centerOfMass: vec4f,
-    quantMin: u32,
-    quantMax: u32,
+    boundsMin: vec4f,
+    boundsMax: vec4f,
     left: i32,
     right: i32,
     parent: i32,
     particleIdx: i32,
-    _pad0: u32,
-    _pad1: u32,
 }
 
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var<storage, read> positions: array<vec4f>;
 @group(0) @binding(2) var<storage, read> bvhNodes: array<BVHNode>;
 @group(0) @binding(3) var<storage, read_write> accelerations: array<vec4f>;
-@group(0) @binding(4) var<storage, read> bboxResult: array<vec4f>;
 
 const G: f32 = 1.0;
-
-fn dequantize(q: u32, bMin: vec3f, bRange: vec3f) -> vec3f {
-    let qv = vec3f(f32((q >> 20u) & 0x3FFu), f32((q >> 10u) & 0x3FFu), f32(q & 0x3FFu));
-    return bMin + (qv / 1023.0) * bRange;
-}
 
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) gid: vec3u) {
     let i = gid.x;
     if (i >= params.numParticles) { return; }
-
-    let bMin = bboxResult[0].xyz;
-    let bMax = bboxResult[1].xyz;
-    let bRange = max(bMax - bMin, vec3f(1e-10));
 
     let pos = positions[i].xyz;
     var acc = vec3f(0.0);
@@ -294,11 +282,16 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         let distSq = dot(diff, diff) + softSq;
         let mass = node.centerOfMass.w;
 
-        // Dequantize bounds and compute max extent of AABB
-        let boundsMin = dequantize(node.quantMin, bMin, bRange);
-        let boundsMax = dequantize(node.quantMax, bMin, bRange);
-        let extent = boundsMax - boundsMin;
-        let halfExtent = max(extent.x, max(extent.y, extent.z)) * 0.5;
+        // Compute bounding-sphere radius at COM from float AABB bounds.
+        // BVH binary trees are deeper than octrees (log2 N vs log8 N), and
+        // tight AABBs make the criterion more aggressive at every level.
+        // Scale by log2(mass) to make high-level nodes (many particles)
+        // proportionally more conservative, matching octree behavior.
+        let boundsMin = node.boundsMin.xyz;
+        let boundsMax = node.boundsMax.xyz;
+        let comToCorner = max(abs(node.centerOfMass.xyz - boundsMin), abs(node.centerOfMass.xyz - boundsMax));
+        let logMass = log2(max(mass, 1.0));
+        let halfExtent = length(comToCorner) * (1.0 + logMass * 0.6);
 
         let isLeaf = (node.left < 0 && node.right < 0);
 
@@ -773,8 +766,8 @@ void Simulation::createComputePipelines(WGPUDevice device) {
     wgpuShaderModuleRelease(directShader);
     wgpuPipelineLayoutRelease(directPL);
 
-    // --- BVH force pipeline: params(uniform), positions(ro), bvhNodes(ro), accelerations(rw), bboxResult(ro) ---
-    WGPUBindGroupLayoutEntry bvhEntries[5] = {};
+    // --- BVH force pipeline: params(uniform), positions(ro), bvhNodes(ro), accelerations(rw) ---
+    WGPUBindGroupLayoutEntry bvhEntries[4] = {};
     bvhEntries[0].binding = 0;
     bvhEntries[0].visibility = WGPUShaderStage_Compute;
     bvhEntries[0].buffer.type = WGPUBufferBindingType_Uniform;
@@ -791,13 +784,9 @@ void Simulation::createComputePipelines(WGPUDevice device) {
     bvhEntries[3].visibility = WGPUShaderStage_Compute;
     bvhEntries[3].buffer.type = WGPUBufferBindingType_Storage;
     bvhEntries[3].buffer.minBindingSize = 0;
-    bvhEntries[4].binding = 4;
-    bvhEntries[4].visibility = WGPUShaderStage_Compute;
-    bvhEntries[4].buffer.type = WGPUBufferBindingType_ReadOnlyStorage;
-    bvhEntries[4].buffer.minBindingSize = 0;
 
     WGPUBindGroupLayoutDescriptor bvhLayoutDesc{};
-    bvhLayoutDesc.entryCount = 5;
+    bvhLayoutDesc.entryCount = 4;
     bvhLayoutDesc.entries = bvhEntries;
     bvhForceBindGroupLayout_ =
         wgpuDeviceCreateBindGroupLayout(device, &bvhLayoutDesc);
@@ -946,15 +935,14 @@ void Simulation::ensureBindGroupsCached(WGPUDevice device) {
         cachedDriftBG_ = makeBG(driftBindGroupLayout_, e, 3);
     }
 
-    // BVH force bind group (params, positions, bvhNodes, accelerations, bboxResult)
+    // BVH force bind group (params, positions, bvhNodes, accelerations)
     {
-        WGPUBindGroupEntry e[5] = {};
+        WGPUBindGroupEntry e[4] = {};
         e[0].binding = 0; e[0].buffer = paramsBuffer_.get(); e[0].size = 32;
         e[1].binding = 1; e[1].buffer = positions_.get(); e[1].size = N * sizeof(glm::vec4);
         e[2].binding = 2; e[2].buffer = gpuTreeBuilder_.getBvhNodesBuffer(); e[2].size = nodeCount * GpuTreeBuilder::kNodeSize;
         e[3].binding = 3; e[3].buffer = accelerations_.get(); e[3].size = N * sizeof(glm::vec4);
-        e[4].binding = 4; e[4].buffer = gpuTreeBuilder_.getBboxResultBuffer(); e[4].size = 2 * 16;
-        cachedBvhForceBG_ = makeBG(bvhForceBindGroupLayout_, e, 5);
+        cachedBvhForceBG_ = makeBG(bvhForceBindGroupLayout_, e, 4);
     }
 
     cachedBGParticleCount_ = numParticles_;
