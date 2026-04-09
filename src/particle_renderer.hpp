@@ -12,7 +12,8 @@ public:
     void render(WGPUDevice device, WGPUQueue queue, WGPUTextureView targetView,
                 WGPUBuffer positionBuffer, WGPUBuffer colorBuffer,
                 int particleCount,
-                const glm::mat4 &viewMatrix, const glm::mat4 &projMatrix);
+                const glm::mat4 &viewMatrix, const glm::mat4 &projMatrix,
+                bool showTrails = false, float trailLength = 0.92f);
 
     void cleanup();
 
@@ -32,4 +33,10 @@ private:
     WGPUBuffer cachedPosBuffer_ = nullptr;
     WGPUBuffer cachedColorBuffer_ = nullptr;
     int cachedParticleCount_ = 0;
+
+    // Fade quad pipeline (for trails)
+    WGPURenderPipeline fadePipeline_ = nullptr;
+    WGPUBindGroupLayout fadeBindGroupLayout_ = nullptr;
+    WGPUBindGroup fadeBindGroup_ = nullptr;
+    wgpu_utils::Buffer fadeUniformBuffer_;
 };

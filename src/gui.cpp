@@ -93,6 +93,10 @@ void GUI::beginFrame(float deltaTime) {
 
     ImGui::Separator();
     ImGui::Checkbox("Show Octree (debug)", &params_.showOctree);
+    ImGui::Checkbox("Particle Trails", &params_.showTrails);
+    if (params_.showTrails) {
+        ImGui::SliderFloat("Trail Length", &params_.trailLength, 0.5f, 0.98f, "%.2f");
+    }
 
     // --- Conservation Diagnostics ---
     ImGui::Separator();

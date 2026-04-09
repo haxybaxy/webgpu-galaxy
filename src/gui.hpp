@@ -11,6 +11,8 @@ struct SimParams {
     bool paused = true;
     bool stepOnce = false;
     bool showOctree = false;
+    bool showTrails = false;
+    float trailLength = 0.92f;
 };
 
 class GUI {

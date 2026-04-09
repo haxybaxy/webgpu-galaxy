@@ -59,6 +59,25 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
 }
 )";
 
+static const char *kFadeShaderSource = R"(
+struct FadeParams {
+    alpha: f32,
+}
+
+@group(0) @binding(0) var<uniform> params: FadeParams;
+
+@vertex
+fn vs_fade(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4f {
+    var pos = array<vec2f, 3>(vec2f(-1.0, -1.0), vec2f(3.0, -1.0), vec2f(-1.0, 3.0));
+    return vec4f(pos[vi], 0.0, 1.0);
+}
+
+@fragment
+fn fs_fade() -> @location(0) vec4f {
+    return vec4f(0.01, 0.01, 0.02, params.alpha);
+}
+)";
+
 void ParticleRenderer::createDepthTexture(WGPUDevice device, int width, int height) {
     if (depthTexture_) {
         wgpuTextureViewRelease(depthTextureView_);
@@ -198,6 +217,98 @@ void ParticleRenderer::initialize(WGPUDevice device, WGPUTextureFormat surfaceFo
     uniformBuffer_.initialize(device,
         WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst, 64);
 
+    // --- Fade pipeline for trails ---
+    WGPUBindGroupLayoutEntry fadeEntry{};
+    fadeEntry.binding = 0;
+    fadeEntry.visibility = WGPUShaderStage_Fragment;
+    fadeEntry.buffer.type = WGPUBufferBindingType_Uniform;
+    fadeEntry.buffer.minBindingSize = 16;
+
+    WGPUBindGroupLayoutDescriptor fadeBGLDesc{};
+    fadeBGLDesc.entryCount = 1;
+    fadeBGLDesc.entries = &fadeEntry;
+    fadeBindGroupLayout_ = wgpuDeviceCreateBindGroupLayout(device, &fadeBGLDesc);
+
+    WGPUPipelineLayoutDescriptor fadePLDesc{};
+    fadePLDesc.bindGroupLayoutCount = 1;
+    fadePLDesc.bindGroupLayouts = &fadeBindGroupLayout_;
+    WGPUPipelineLayout fadePipelineLayout = wgpuDeviceCreatePipelineLayout(device, &fadePLDesc);
+
+    WGPUShaderModule fadeShader = wgpu_utils::createShaderModule(device, kFadeShaderSource);
+
+    WGPURenderPipelineDescriptor fadePipelineDesc{};
+    fadePipelineDesc.layout = fadePipelineLayout;
+
+    fadePipelineDesc.vertex.module = fadeShader;
+    fadePipelineDesc.vertex.entryPoint = "vs_fade";
+    fadePipelineDesc.vertex.bufferCount = 0;
+
+    fadePipelineDesc.primitive.topology = WGPUPrimitiveTopology_TriangleList;
+    fadePipelineDesc.primitive.stripIndexFormat = WGPUIndexFormat_Undefined;
+    fadePipelineDesc.primitive.frontFace = WGPUFrontFace_CCW;
+    fadePipelineDesc.primitive.cullMode = WGPUCullMode_None;
+
+    // Standard alpha blending for fade effect
+    WGPUBlendState fadeBlendState{};
+    fadeBlendState.color.srcFactor = WGPUBlendFactor_SrcAlpha;
+    fadeBlendState.color.dstFactor = WGPUBlendFactor_OneMinusSrcAlpha;
+    fadeBlendState.color.operation = WGPUBlendOperation_Add;
+    fadeBlendState.alpha.srcFactor = WGPUBlendFactor_One;
+    fadeBlendState.alpha.dstFactor = WGPUBlendFactor_OneMinusSrcAlpha;
+    fadeBlendState.alpha.operation = WGPUBlendOperation_Add;
+
+    WGPUColorTargetState fadeColorTarget{};
+    fadeColorTarget.format = surfaceFormat;
+    fadeColorTarget.blend = &fadeBlendState;
+    fadeColorTarget.writeMask = WGPUColorWriteMask_All;
+
+    WGPUFragmentState fadeFragmentState{};
+    fadeFragmentState.module = fadeShader;
+    fadeFragmentState.entryPoint = "fs_fade";
+    fadeFragmentState.targetCount = 1;
+    fadeFragmentState.targets = &fadeColorTarget;
+    fadePipelineDesc.fragment = &fadeFragmentState;
+
+    // Depth state: does nothing, but required for render pass compatibility
+    WGPUDepthStencilState fadeDepthStencil{};
+    fadeDepthStencil.format = WGPUTextureFormat_Depth24Plus;
+    fadeDepthStencil.depthWriteEnabled = false;
+    fadeDepthStencil.depthCompare = WGPUCompareFunction_Always;
+    fadeDepthStencil.stencilFront.compare = WGPUCompareFunction_Always;
+    fadeDepthStencil.stencilFront.failOp = WGPUStencilOperation_Keep;
+    fadeDepthStencil.stencilFront.depthFailOp = WGPUStencilOperation_Keep;
+    fadeDepthStencil.stencilFront.passOp = WGPUStencilOperation_Keep;
+    fadeDepthStencil.stencilBack = fadeDepthStencil.stencilFront;
+    fadeDepthStencil.stencilReadMask = 0;
+    fadeDepthStencil.stencilWriteMask = 0;
+    fadeDepthStencil.depthBias = 0;
+    fadeDepthStencil.depthBiasSlopeScale = 0.0f;
+    fadeDepthStencil.depthBiasClamp = 0.0f;
+    fadePipelineDesc.depthStencil = &fadeDepthStencil;
+
+    fadePipelineDesc.multisample.count = 1;
+    fadePipelineDesc.multisample.mask = ~0u;
+    fadePipelineDesc.multisample.alphaToCoverageEnabled = false;
+
+    fadePipeline_ = wgpuDeviceCreateRenderPipeline(device, &fadePipelineDesc);
+    wgpuShaderModuleRelease(fadeShader);
+    wgpuPipelineLayoutRelease(fadePipelineLayout);
+
+    fadeUniformBuffer_.initialize(device,
+        WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst, 16);
+
+    WGPUBindGroupEntry fadeBGEntry{};
+    fadeBGEntry.binding = 0;
+    fadeBGEntry.buffer = fadeUniformBuffer_.get();
+    fadeBGEntry.offset = 0;
+    fadeBGEntry.size = 16;
+
+    WGPUBindGroupDescriptor fadeBGDesc{};
+    fadeBGDesc.layout = fadeBindGroupLayout_;
+    fadeBGDesc.entryCount = 1;
+    fadeBGDesc.entries = &fadeBGEntry;
+    fadeBindGroup_ = wgpuDeviceCreateBindGroup(device, &fadeBGDesc);
+
     initialized_ = true;
     spdlog::info("Particle renderer initialized");
 }
@@ -207,7 +318,8 @@ void ParticleRenderer::render(WGPUDevice device, WGPUQueue queue,
                               WGPUBuffer positionBuffer, WGPUBuffer colorBuffer,
                               int particleCount,
                               const glm::mat4 &viewMatrix,
-                              const glm::mat4 &projMatrix) {
+                              const glm::mat4 &projMatrix,
+                              bool showTrails, float trailLength) {
     if (!initialized_ || particleCount <= 0 || !pipeline_) return;
 
     glm::mat4 viewProj = projMatrix * viewMatrix;
@@ -247,12 +359,18 @@ void ParticleRenderer::render(WGPUDevice device, WGPUQueue queue,
     WGPURenderPassColorAttachment colorAttachment{};
     colorAttachment.view = targetView;
     colorAttachment.resolveTarget = nullptr;
-    colorAttachment.loadOp = WGPULoadOp_Clear;
     colorAttachment.storeOp = WGPUStoreOp_Store;
-    colorAttachment.clearValue = {0.01, 0.01, 0.02, 1.0};
 #ifndef WEBGPU_BACKEND_WGPU
     colorAttachment.depthSlice = WGPU_DEPTH_SLICE_UNDEFINED;
 #endif
+
+    if (showTrails) {
+        colorAttachment.loadOp = WGPULoadOp_Load;
+        colorAttachment.clearValue = {0.0, 0.0, 0.0, 0.0};
+    } else {
+        colorAttachment.loadOp = WGPULoadOp_Clear;
+        colorAttachment.clearValue = {0.01, 0.01, 0.02, 1.0};
+    }
 
     WGPURenderPassDepthStencilAttachment depthAttachment{};
     depthAttachment.view = depthTextureView_;
@@ -269,6 +387,17 @@ void ParticleRenderer::render(WGPUDevice device, WGPUQueue queue,
     passDesc.depthStencilAttachment = &depthAttachment;
 
     WGPURenderPassEncoder pass = wgpuCommandEncoderBeginRenderPass(encoder, &passDesc);
+
+    if (showTrails) {
+        float fadeAlpha = 1.0f - trailLength;
+        float fadeData[4] = {fadeAlpha, 0.0f, 0.0f, 0.0f};
+        fadeUniformBuffer_.upload(queue, fadeData, 16);
+
+        wgpuRenderPassEncoderSetPipeline(pass, fadePipeline_);
+        wgpuRenderPassEncoderSetBindGroup(pass, 0, fadeBindGroup_, 0, nullptr);
+        wgpuRenderPassEncoderDraw(pass, 3, 1, 0, 0);
+    }
+
     wgpuRenderPassEncoderSetPipeline(pass, pipeline_);
     wgpuRenderPassEncoderSetBindGroup(pass, 0, cachedBindGroup_, 0, nullptr);
     wgpuRenderPassEncoderDraw(pass, 6, static_cast<uint32_t>(particleCount), 0, 0);
@@ -282,6 +411,18 @@ void ParticleRenderer::cleanup() {
     if (cachedBindGroup_) {
         wgpuBindGroupRelease(cachedBindGroup_);
         cachedBindGroup_ = nullptr;
+    }
+    if (fadeBindGroup_) {
+        wgpuBindGroupRelease(fadeBindGroup_);
+        fadeBindGroup_ = nullptr;
+    }
+    if (fadePipeline_) {
+        wgpuRenderPipelineRelease(fadePipeline_);
+        fadePipeline_ = nullptr;
+    }
+    if (fadeBindGroupLayout_) {
+        wgpuBindGroupLayoutRelease(fadeBindGroupLayout_);
+        fadeBindGroupLayout_ = nullptr;
     }
     if (depthTextureView_) {
         wgpuTextureViewRelease(depthTextureView_);

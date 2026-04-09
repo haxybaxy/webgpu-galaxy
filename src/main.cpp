@@ -256,7 +256,8 @@ public:
                          simulation_.getColorBuffer(),
                          simulation_.getParticleCount(),
                          camera_.getViewMatrix(),
-                         camera_.getProjectionMatrix(aspect));
+                         camera_.getProjectionMatrix(aspect),
+                         params.showTrails, params.trailLength);
 
         gui_.render(targetView);
 
