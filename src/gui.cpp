@@ -59,8 +59,6 @@ void GUI::beginFrame(float deltaTime) {
     ImGui::Text("Particles: %d", particleCount_);
     ImGui::Text("Tree Nodes: %d", nodeCount_);
     ImGui::Text("Scenario: %s", scenarioName_);
-    ImGui::Text("Integrator: %s", integratorName_);
-    ImGui::Text("Tree: %s", treeMethodName_);
     ImGui::Text("Force: %s", forceMethodName_);
     ImGui::Separator();
 
@@ -92,7 +90,6 @@ void GUI::beginFrame(float deltaTime) {
     if (params_.numParticles > 100000) params_.numParticles = 100000;
 
     ImGui::Separator();
-    ImGui::Checkbox("Show Octree (debug)", &params_.showOctree);
     ImGui::Checkbox("Particle Trails", &params_.showTrails);
     if (params_.showTrails) {
         ImGui::SliderFloat("Trail Length", &params_.trailLength, 0.5f, 0.98f, "%.2f");

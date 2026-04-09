@@ -32,23 +32,25 @@ Backend selection: `-DWEBGPU_BACKEND=WGPU` (default) or `DAWN` or `EMSCRIPTEN`.
 
 ## Architecture
 
-### GPU-Primary Architecture
+### GPU-Only Architecture
 
-All physics runs on the GPU. The CPU tree path reads back positions via staging buffers when it needs to build an octree. Diagnostics always use GPU readback. Bind groups are cached and only recreated when particle count changes.
+All physics runs entirely on the GPU. Diagnostics use on-demand GPU readback. Bind groups are cached and only recreated when particle count changes.
 
 ### Simulation Step (KDK Leapfrog)
 
-1. **Half-kick** (CPU loop + GPU kick shader): `v += a * dt/2`
-2. **Drift** (CPU loop + GPU drift shader): `x += v * dt`
-3. **Octree build** (CPU only): `Octree::build()` from CPU positions → flatten to `OctreeNode[]` → upload to GPU
-4. **Force computation** (CPU Barnes-Hut traversal + GPU force shader): both traverse the same octree
-5. **Second half-kick** (CPU loop + GPU kick shader): `v += a * dt/2`
+1. **Half-kick** (GPU kick shader): `v += a * dt/2`
+2. **Drift** (GPU drift shader): `x += v * dt`
+3. **GPU tree build** (~10 compute passes): LBVH construction (bbox reduction, Morton codes, radix sort, Karras algorithm, leaf init, node aggregation)
+4. **Force computation** (GPU BVH force shader): stack-based Barnes-Hut traversal of GPU-resident BVH
+5. **Second half-kick** (GPU kick shader): `v += a * dt/2`
 
-The Euler integrator is preserved as a `--integrator euler` fallback with the original force→integrate sequence.
+All passes are recorded into a single command encoder and submitted together.
+
+An alternative O(N²) direct force path (`--force-method direct`) replaces steps 3-4 with a brute-force pairwise summation shader.
 
 ### Shader Embedding
 
-All WGSL shaders are **embedded as C string literals** in `simulation.cpp` (4 compute shaders) and `particle_renderer.cpp` (1 render shader). There are no separate `.wgsl` files.
+All WGSL shaders are **embedded as C string literals** in `simulation.cpp` (3 compute shaders: kick, drift, direct force, BVH force) and `particle_renderer.cpp` (1 render shader). The GPU tree builder (`gpu_tree_builder.cpp`) embeds 10 additional compute shaders for LBVH construction. There are no separate `.wgsl` files.
 
 ### Rendering Pipeline
 
@@ -57,38 +59,26 @@ Particles are rendered as instanced billboard quads (6 vertices each) with addit
 ### CLI Configuration
 
 ```
---scenario    twobody | plummer | disk     (default: disk)
---integrator  euler | leapfrog             (default: leapfrog)
---N           particle count               (default: 10000)
---dt / --softening / --theta / --seed      physics parameters
---steps       step limit (0=interactive)
---export      CSV output path
---headless    batch mode (no window)
+--scenario      twobody | plummer | disk     (default: disk)
+--force-method  tree | direct                (default: tree)
+--N             particle count               (default: 10000)
+--dt / --softening / --theta / --seed        physics parameters
+--steps         step limit (0=interactive)
+--export        CSV output path
+--headless      batch mode (no window)
 ```
 
 ### Key Files
 
 | File | Role |
 |------|------|
-| `simulation.cpp` | Physics engine: shaders, scenarios, integrators, GPU step logic |
-| `octree.cpp` | CPU octree: recursive insert, COM propagation, flatten to GPU layout |
+| `simulation.cpp` | Physics engine: shaders, scenarios, GPU step logic |
+| `gpu_tree_builder.cpp` | GPU LBVH construction: 10 compute passes for tree building |
 | `particle_renderer.cpp` | WebGPU render pipeline with embedded WGSL vertex/fragment shader |
 | `main.cpp` | Application class (interactive) + `runHeadless()` (batch) |
 | `diagnostics.cpp` | Conservation metrics: kinetic/potential energy, momentum, drift |
 | `config.cpp` | CLI argument parser |
 | `exporter.cpp` | Per-step CSV export |
-
-### OctreeNode GPU Layout
-
-```cpp
-struct OctreeNode {
-    glm::vec4 centerOfMass;  // xyz = COM, w = total mass
-    glm::vec4 bounds;        // xyz = box center, w = half-width
-    int32_t children[8];     // -1 = empty
-};
-```
-
-The GPU force shader traverses this with an explicit stack (depth 64) using the Barnes-Hut opening criterion: `halfWidth² / distSq < θ²`.
 
 ### BVHNodeGPU Layout (64 bytes, float32 bounds)
 
@@ -111,7 +101,8 @@ offset 4:  f32 softening
 offset 8:  f32 theta
 offset 12: u32 numParticles
 offset 16: u32 nodeCount
-offset 20: f32[3] padding
+offset 20: u32 paddedN
+offset 24: f32[2] padding
 ```
 
 This struct must match between C++ (`alignas(16)`) and WGSL exactly.

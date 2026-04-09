@@ -309,6 +309,28 @@ void ParticleRenderer::initialize(WGPUDevice device, WGPUTextureFormat surfaceFo
     fadeBGDesc.entries = &fadeBGEntry;
     fadeBindGroup_ = wgpuDeviceCreateBindGroup(device, &fadeBGDesc);
 
+    // Trail accumulation texture (persistent across frames)
+    WGPUTextureDescriptor trailDesc{};
+    trailDesc.dimension = WGPUTextureDimension_2D;
+    trailDesc.format = surfaceFormat;
+    trailDesc.mipLevelCount = 1;
+    trailDesc.sampleCount = 1;
+    trailDesc.size = {static_cast<uint32_t>(width), static_cast<uint32_t>(height), 1};
+    trailDesc.usage = WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_CopySrc;
+    trailTexture_ = wgpuDeviceCreateTexture(device, &trailDesc);
+    trailWidth_ = static_cast<uint32_t>(width);
+    trailHeight_ = static_cast<uint32_t>(height);
+
+    WGPUTextureViewDescriptor trailViewDesc{};
+    trailViewDesc.aspect = WGPUTextureAspect_All;
+    trailViewDesc.baseArrayLayer = 0;
+    trailViewDesc.arrayLayerCount = 1;
+    trailViewDesc.baseMipLevel = 0;
+    trailViewDesc.mipLevelCount = 1;
+    trailViewDesc.dimension = WGPUTextureViewDimension_2D;
+    trailViewDesc.format = surfaceFormat;
+    trailTextureView_ = wgpuTextureCreateView(trailTexture_, &trailViewDesc);
+
     initialized_ = true;
     spdlog::info("Particle renderer initialized");
 }
@@ -319,7 +341,8 @@ void ParticleRenderer::render(WGPUDevice device, WGPUQueue queue,
                               int particleCount,
                               const glm::mat4 &viewMatrix,
                               const glm::mat4 &projMatrix,
-                              bool showTrails, float trailLength) {
+                              bool showTrails, float trailLength,
+                              WGPUTexture targetTexture) {
     if (!initialized_ || particleCount <= 0 || !pipeline_) return;
 
     glm::mat4 viewProj = projMatrix * viewMatrix;
@@ -354,17 +377,20 @@ void ParticleRenderer::render(WGPUDevice device, WGPUQueue queue,
         cachedParticleCount_ = particleCount;
     }
 
+    // Choose render target: trail texture (persistent) or swapchain (direct)
+    WGPUTextureView renderTarget = (showTrails && trailTextureView_) ? trailTextureView_ : targetView;
+
     WGPUCommandEncoder encoder = wgpu_utils::createCommandEncoder(device);
 
     WGPURenderPassColorAttachment colorAttachment{};
-    colorAttachment.view = targetView;
+    colorAttachment.view = renderTarget;
     colorAttachment.resolveTarget = nullptr;
     colorAttachment.storeOp = WGPUStoreOp_Store;
 #ifndef WEBGPU_BACKEND_WGPU
     colorAttachment.depthSlice = WGPU_DEPTH_SLICE_UNDEFINED;
 #endif
 
-    if (showTrails) {
+    if (showTrails && trailTextureView_) {
         colorAttachment.loadOp = WGPULoadOp_Load;
         colorAttachment.clearValue = {0.0, 0.0, 0.0, 0.0};
     } else {
@@ -388,7 +414,7 @@ void ParticleRenderer::render(WGPUDevice device, WGPUQueue queue,
 
     WGPURenderPassEncoder pass = wgpuCommandEncoderBeginRenderPass(encoder, &passDesc);
 
-    if (showTrails) {
+    if (showTrails && trailTextureView_) {
         float fadeAlpha = 1.0f - trailLength;
         float fadeData[4] = {fadeAlpha, 0.0f, 0.0f, 0.0f};
         fadeUniformBuffer_.upload(queue, fadeData, 16);
@@ -403,6 +429,24 @@ void ParticleRenderer::render(WGPUDevice device, WGPUQueue queue,
     wgpuRenderPassEncoderDraw(pass, 6, static_cast<uint32_t>(particleCount), 0, 0);
     wgpuRenderPassEncoderEnd(pass);
     wgpuRenderPassEncoderRelease(pass);
+
+    // Copy trail texture to swapchain surface
+    if (showTrails && trailTexture_ && targetTexture) {
+        WGPUImageCopyTexture src{};
+        src.texture = trailTexture_;
+        src.mipLevel = 0;
+        src.origin = {0, 0, 0};
+        src.aspect = WGPUTextureAspect_All;
+
+        WGPUImageCopyTexture dst{};
+        dst.texture = targetTexture;
+        dst.mipLevel = 0;
+        dst.origin = {0, 0, 0};
+        dst.aspect = WGPUTextureAspect_All;
+
+        WGPUExtent3D copySize = {trailWidth_, trailHeight_, 1};
+        wgpuCommandEncoderCopyTextureToTexture(encoder, &src, &dst, &copySize);
+    }
 
     wgpu_utils::finishCommandEncoder(queue, encoder);
 }
@@ -423,6 +467,14 @@ void ParticleRenderer::cleanup() {
     if (fadeBindGroupLayout_) {
         wgpuBindGroupLayoutRelease(fadeBindGroupLayout_);
         fadeBindGroupLayout_ = nullptr;
+    }
+    if (trailTextureView_) {
+        wgpuTextureViewRelease(trailTextureView_);
+        trailTextureView_ = nullptr;
+    }
+    if (trailTexture_) {
+        wgpuTextureRelease(trailTexture_);
+        trailTexture_ = nullptr;
     }
     if (depthTextureView_) {
         wgpuTextureViewRelease(depthTextureView_);

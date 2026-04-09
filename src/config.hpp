@@ -5,14 +5,10 @@
 #include <vector>
 
 enum class Scenario { TwoBody, PlummerSphere, RotatingDisk };
-enum class Integrator { Euler, Leapfrog };
-enum class TreeMethod { CPU, GPU };
 enum class ForceMethod { Tree, Direct };
 
 struct Config {
     Scenario scenario = Scenario::RotatingDisk;
-    Integrator integrator = Integrator::Leapfrog;
-    TreeMethod treeMethod = TreeMethod::GPU;
     ForceMethod forceMethod = ForceMethod::Tree;
     int numParticles = 10000;
     float dt = 0.001f;
@@ -27,6 +23,4 @@ struct Config {
 
 Config parseArgs(int argc, char **argv);
 const char *scenarioName(Scenario s);
-const char *integratorName(Integrator i);
-const char *treeMethodName(TreeMethod t);
 const char *forceMethodName(ForceMethod f);

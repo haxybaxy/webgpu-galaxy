@@ -13,7 +13,8 @@ public:
                 WGPUBuffer positionBuffer, WGPUBuffer colorBuffer,
                 int particleCount,
                 const glm::mat4 &viewMatrix, const glm::mat4 &projMatrix,
-                bool showTrails = false, float trailLength = 0.92f);
+                bool showTrails = false, float trailLength = 0.92f,
+                WGPUTexture targetTexture = nullptr);
 
     void cleanup();
 
@@ -39,4 +40,10 @@ private:
     WGPUBindGroupLayout fadeBindGroupLayout_ = nullptr;
     WGPUBindGroup fadeBindGroup_ = nullptr;
     wgpu_utils::Buffer fadeUniformBuffer_;
+
+    // Persistent trail accumulation texture
+    WGPUTexture trailTexture_ = nullptr;
+    WGPUTextureView trailTextureView_ = nullptr;
+    uint32_t trailWidth_ = 0;
+    uint32_t trailHeight_ = 0;
 };

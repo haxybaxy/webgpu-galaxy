@@ -46,7 +46,7 @@ createAndConfigureSurface(WGPUInstance instance, WGPUAdapter adapter,
     config.format = surfaceFormat;
     config.viewFormatCount = 0;
     config.viewFormats = nullptr;
-    config.usage = WGPUTextureUsage_RenderAttachment;
+    config.usage = WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_CopyDst;
     config.device = device;
     config.presentMode = WGPUPresentMode_Fifo;
     config.alphaMode = WGPUCompositeAlphaMode_Auto;
