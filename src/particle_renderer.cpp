@@ -213,26 +213,34 @@ void ParticleRenderer::render(WGPUDevice device, WGPUQueue queue,
     glm::mat4 viewProj = projMatrix * viewMatrix;
     uniformBuffer_.upload(queue, glm::value_ptr(viewProj), 64);
 
-    // Create bind group
-    WGPUBindGroupEntry bindEntries[3] = {};
-    bindEntries[0].binding = 0;
-    bindEntries[0].buffer = uniformBuffer_.get();
-    bindEntries[0].offset = 0;
-    bindEntries[0].size = 64;
-    bindEntries[1].binding = 1;
-    bindEntries[1].buffer = positionBuffer;
-    bindEntries[1].offset = 0;
-    bindEntries[1].size = particleCount * sizeof(glm::vec4);
-    bindEntries[2].binding = 2;
-    bindEntries[2].buffer = colorBuffer;
-    bindEntries[2].offset = 0;
-    bindEntries[2].size = particleCount * sizeof(glm::vec4);
+    // Cache bind group (recreate only when buffers change)
+    if (!cachedBindGroup_ || cachedPosBuffer_ != positionBuffer ||
+        cachedColorBuffer_ != colorBuffer || cachedParticleCount_ != particleCount) {
+        if (cachedBindGroup_) wgpuBindGroupRelease(cachedBindGroup_);
 
-    WGPUBindGroupDescriptor bindGroupDesc{};
-    bindGroupDesc.layout = bindGroupLayout_;
-    bindGroupDesc.entryCount = 3;
-    bindGroupDesc.entries = bindEntries;
-    WGPUBindGroup bindGroup = wgpuDeviceCreateBindGroup(device, &bindGroupDesc);
+        WGPUBindGroupEntry bindEntries[3] = {};
+        bindEntries[0].binding = 0;
+        bindEntries[0].buffer = uniformBuffer_.get();
+        bindEntries[0].offset = 0;
+        bindEntries[0].size = 64;
+        bindEntries[1].binding = 1;
+        bindEntries[1].buffer = positionBuffer;
+        bindEntries[1].offset = 0;
+        bindEntries[1].size = particleCount * sizeof(glm::vec4);
+        bindEntries[2].binding = 2;
+        bindEntries[2].buffer = colorBuffer;
+        bindEntries[2].offset = 0;
+        bindEntries[2].size = particleCount * sizeof(glm::vec4);
+
+        WGPUBindGroupDescriptor bindGroupDesc{};
+        bindGroupDesc.layout = bindGroupLayout_;
+        bindGroupDesc.entryCount = 3;
+        bindGroupDesc.entries = bindEntries;
+        cachedBindGroup_ = wgpuDeviceCreateBindGroup(device, &bindGroupDesc);
+        cachedPosBuffer_ = positionBuffer;
+        cachedColorBuffer_ = colorBuffer;
+        cachedParticleCount_ = particleCount;
+    }
 
     WGPUCommandEncoder encoder = wgpu_utils::createCommandEncoder(device);
 
@@ -262,16 +270,19 @@ void ParticleRenderer::render(WGPUDevice device, WGPUQueue queue,
 
     WGPURenderPassEncoder pass = wgpuCommandEncoderBeginRenderPass(encoder, &passDesc);
     wgpuRenderPassEncoderSetPipeline(pass, pipeline_);
-    wgpuRenderPassEncoderSetBindGroup(pass, 0, bindGroup, 0, nullptr);
+    wgpuRenderPassEncoderSetBindGroup(pass, 0, cachedBindGroup_, 0, nullptr);
     wgpuRenderPassEncoderDraw(pass, 6, static_cast<uint32_t>(particleCount), 0, 0);
     wgpuRenderPassEncoderEnd(pass);
     wgpuRenderPassEncoderRelease(pass);
 
     wgpu_utils::finishCommandEncoder(queue, encoder);
-    wgpuBindGroupRelease(bindGroup);
 }
 
 void ParticleRenderer::cleanup() {
+    if (cachedBindGroup_) {
+        wgpuBindGroupRelease(cachedBindGroup_);
+        cachedBindGroup_ = nullptr;
+    }
     if (depthTextureView_) {
         wgpuTextureViewRelease(depthTextureView_);
         depthTextureView_ = nullptr;

@@ -6,7 +6,8 @@ bool Exporter::open(const std::string &path) {
     if (!file_.is_open()) return false;
 
     file_ << "step,time,kinetic_energy,potential_energy,total_energy,"
-              "energy_drift,px,py,pz,tree_build_ms,force_ms,integrate_ms\n";
+              "energy_drift,px,py,pz,tree_build_ms,force_ms,integrate_ms,"
+              "separation,orbital_period,eccentricity\n";
     return true;
 }
 
@@ -21,7 +22,9 @@ void Exporter::writeRow(int step, double simTime, const Diagnostics &diag,
            << diag.totalMomentum.x << "," << diag.totalMomentum.y << ","
            << diag.totalMomentum.z << "," << std::setprecision(3)
            << timing.treeBuildMs << "," << timing.forceMs << ","
-           << timing.integrateMs << "\n";
+           << timing.integrateMs << ","
+           << diag.separation << "," << diag.orbitalPeriodEstimate << ","
+           << diag.eccentricity << "\n";
 }
 
 void Exporter::close() {

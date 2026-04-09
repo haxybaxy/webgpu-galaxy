@@ -229,7 +229,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 }
 )";
 
-// BVH force traversal shader (binary tree)
+// BVH force traversal shader (binary tree, float32 bounds)
 static const char *kBvhForceShaderSource = R"(
 struct Params {
     dt: f32,
@@ -282,13 +282,20 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         let distSq = dot(diff, diff) + softSq;
         let mass = node.centerOfMass.w;
 
-        // Compute max extent of AABB
-        let extent = node.boundsMax.xyz - node.boundsMin.xyz;
-        let maxExtent = max(extent.x, max(extent.y, extent.z));
+        // Compute bounding-sphere radius at COM from float AABB bounds.
+        // BVH binary trees are deeper than octrees (log2 N vs log8 N), and
+        // tight AABBs make the criterion more aggressive at every level.
+        // Scale by log2(mass) to make high-level nodes (many particles)
+        // proportionally more conservative, matching octree behavior.
+        let boundsMin = node.boundsMin.xyz;
+        let boundsMax = node.boundsMax.xyz;
+        let comToCorner = max(abs(node.centerOfMass.xyz - boundsMin), abs(node.centerOfMass.xyz - boundsMax));
+        let logMass = log2(max(mass, 1.0));
+        let halfExtent = length(comToCorner) * (1.0 + logMass * 0.6);
 
         let isLeaf = (node.left < 0 && node.right < 0);
 
-        if (isLeaf || (maxExtent * maxExtent / distSq < thetaSq)) {
+        if (isLeaf || (halfExtent * halfExtent / distSq < thetaSq)) {
             if (mass > 0.0 && distSq > softSq * 0.01) {
                 let invDist = inverseSqrt(distSq);
                 let invDist3 = invDist * invDist * invDist;
@@ -833,7 +840,7 @@ void Simulation::initialize(WGPUDevice device, WGPUQueue queue,
                        WGPUBufferUsage_Storage | WGPUBufferUsage_CopyDst,
                        numParticles_ * sizeof(glm::vec4));
     accelerations_.initialize(
-        device, WGPUBufferUsage_Storage | WGPUBufferUsage_CopyDst,
+        device, WGPUBufferUsage_Storage | WGPUBufferUsage_CopyDst | WGPUBufferUsage_CopySrc,
         numParticles_ * sizeof(glm::vec4));
 
     positions_.upload(queue, cpuPositions_.data(),
@@ -883,7 +890,97 @@ void Simulation::reinitialize(WGPUDevice device, WGPUQueue queue,
     colors_.upload(queue, cpuColors_.data(),
                    numParticles_ * sizeof(glm::vec4));
 
+    invalidateBindGroups();
     computeInitialForces(queue, config.softening, config.theta);
+}
+
+void Simulation::invalidateBindGroups() {
+    if (cachedKickBG_) { wgpuBindGroupRelease(cachedKickBG_); cachedKickBG_ = nullptr; }
+    if (cachedDriftBG_) { wgpuBindGroupRelease(cachedDriftBG_); cachedDriftBG_ = nullptr; }
+    if (cachedBvhForceBG_) { wgpuBindGroupRelease(cachedBvhForceBG_); cachedBvhForceBG_ = nullptr; }
+    cachedBGParticleCount_ = 0;
+}
+
+void Simulation::ensureBindGroupsCached(WGPUDevice device) {
+    if (cachedBGParticleCount_ == numParticles_) return;
+    invalidateBindGroups();
+
+    uint32_t N = static_cast<uint32_t>(numParticles_);
+    uint32_t nodeCount = 2 * N - 1;
+
+    auto makeBG = [&](WGPUBindGroupLayout layout,
+                      WGPUBindGroupEntry *entries, uint32_t count) -> WGPUBindGroup {
+        WGPUBindGroupDescriptor desc{};
+        desc.layout = layout;
+        desc.entryCount = count;
+        desc.entries = entries;
+        return wgpuDeviceCreateBindGroup(device, &desc);
+    };
+
+    // Kick bind group (params, velocities, accelerations)
+    {
+        WGPUBindGroupEntry e[3] = {};
+        e[0].binding = 0; e[0].buffer = paramsBuffer_.get(); e[0].size = 32;
+        e[1].binding = 1; e[1].buffer = velocities_.get(); e[1].size = N * sizeof(glm::vec4);
+        e[2].binding = 2; e[2].buffer = accelerations_.get(); e[2].size = N * sizeof(glm::vec4);
+        cachedKickBG_ = makeBG(kickBindGroupLayout_, e, 3);
+    }
+
+    // Drift bind group (params, positions, velocities)
+    {
+        WGPUBindGroupEntry e[3] = {};
+        e[0].binding = 0; e[0].buffer = paramsBuffer_.get(); e[0].size = 32;
+        e[1].binding = 1; e[1].buffer = positions_.get(); e[1].size = N * sizeof(glm::vec4);
+        e[2].binding = 2; e[2].buffer = velocities_.get(); e[2].size = N * sizeof(glm::vec4);
+        cachedDriftBG_ = makeBG(driftBindGroupLayout_, e, 3);
+    }
+
+    // BVH force bind group (params, positions, bvhNodes, accelerations)
+    {
+        WGPUBindGroupEntry e[4] = {};
+        e[0].binding = 0; e[0].buffer = paramsBuffer_.get(); e[0].size = 32;
+        e[1].binding = 1; e[1].buffer = positions_.get(); e[1].size = N * sizeof(glm::vec4);
+        e[2].binding = 2; e[2].buffer = gpuTreeBuilder_.getBvhNodesBuffer(); e[2].size = nodeCount * GpuTreeBuilder::kNodeSize;
+        e[3].binding = 3; e[3].buffer = accelerations_.get(); e[3].size = N * sizeof(glm::vec4);
+        cachedBvhForceBG_ = makeBG(bvhForceBindGroupLayout_, e, 4);
+    }
+
+    cachedBGParticleCount_ = numParticles_;
+}
+
+void Simulation::debugDumpTree(WGPUDevice device, WGPUQueue queue) {
+    if (treeMethod_ != TreeMethod::GPU) return;
+    uint32_t N = static_cast<uint32_t>(numParticles_);
+    uint32_t nc = 2 * N - 1;
+    size_t treeSz = nc * sizeof(BVHNodeGPU);
+
+    WGPUBufferDescriptor sd{};
+    sd.size = treeSz;
+    sd.usage = WGPUBufferUsage_CopyDst | WGPUBufferUsage_MapRead;
+    sd.mappedAtCreation = false;
+    WGPUBuffer staging = wgpuDeviceCreateBuffer(device, &sd);
+
+    WGPUCommandEncoder enc = wgpu_utils::createCommandEncoder(device);
+    wgpuCommandEncoderCopyBufferToBuffer(enc, gpuTreeBuilder_.getBvhNodesBuffer(), 0, staging, 0, treeSz);
+    wgpu_utils::finishCommandEncoder(queue, enc);
+
+    const void *data = wgpu_utils::mapBufferSync(device, staging, treeSz);
+    if (data) {
+        auto *nodes = reinterpret_cast<const BVHNodeGPU*>(data);
+        for (uint32_t n = 0; n < std::min(nc, 20u); n++) {
+            bool isInt = n < N - 1;
+            spdlog::info("  n[{}]{}: COM=({:.3f},{:.3f},{:.3f},m={:.3f}) L={} R={} P={}",
+                n, isInt ? "I" : "L",
+                nodes[n].centerOfMass.x, nodes[n].centerOfMass.y,
+                nodes[n].centerOfMass.z, nodes[n].centerOfMass.w,
+                nodes[n].left, nodes[n].right, nodes[n].parent);
+        }
+        wgpuBufferUnmap(staging);
+    } else {
+        spdlog::error("Tree readback failed!");
+    }
+    wgpuBufferDestroy(staging);
+    wgpuBufferRelease(staging);
 }
 
 // ============================================================
@@ -982,22 +1079,7 @@ void Simulation::stepLeapfrog(WGPUDevice device, WGPUQueue queue, float dt,
     params._pad[0] = params._pad[1] = 0.0f;
     paramsBuffer_.upload(queue, &params, sizeof(params));
 
-    // --- Phase 1: Half-kick + Drift (CPU mirror) ---
-    for (int i = 0; i < numParticles_; i++) {
-        glm::vec3 vel(cpuVelocities_[i]);
-        glm::vec3 acc(cpuAccelerations_[i]);
-        vel += acc * (dt * 0.5f);
-        cpuVelocities_[i] = glm::vec4(vel, 0.0f);
-    }
-    for (int i = 0; i < numParticles_; i++) {
-        glm::vec3 pos(cpuPositions_[i]);
-        glm::vec3 vel(cpuVelocities_[i]);
-        float mass = cpuPositions_[i].w;
-        pos += vel * dt;
-        cpuPositions_[i] = glm::vec4(pos, mass);
-    }
-
-    // --- Phase 1: Half-kick + Drift (GPU) ---
+    // --- Phase 1: Half-kick + Drift (GPU only) ---
     {
         // Create kick bind group
         WGPUBindGroupEntry kickBE[3] = {};
@@ -1071,7 +1153,8 @@ void Simulation::stepLeapfrog(WGPUDevice device, WGPUQueue queue, float dt,
 
     auto t1 = Clock::now();
 
-    // --- Phase 2: Octree build (CPU) ---
+    // --- Phase 2: Readback positions from GPU, then build octree on CPU ---
+    readbackState(device, queue, cpuPositions_, cpuVelocities_);
     octree_.build(cpuPositions_);
     size_t nodeCount = octree_.nodeCount();
     if (nodeCount == 0) return;
@@ -1088,9 +1171,6 @@ void Simulation::stepLeapfrog(WGPUDevice device, WGPUQueue queue, float dt,
     // Re-upload params with correct nodeCount
     params.nodeCount = static_cast<uint32_t>(nodeCount);
     paramsBuffer_.upload(queue, &params, sizeof(params));
-
-    // CPU force computation
-    cpuBarnesHut(softening, theta);
 
     // GPU: force + second kick
     {
@@ -1169,14 +1249,6 @@ void Simulation::stepLeapfrog(WGPUDevice device, WGPUQueue queue, float dt,
         wgpuBindGroupRelease(kickBG);
     }
 
-    // CPU: second half-kick
-    for (int i = 0; i < numParticles_; i++) {
-        glm::vec3 vel(cpuVelocities_[i]);
-        glm::vec3 acc(cpuAccelerations_[i]);
-        vel += acc * (dt * 0.5f);
-        cpuVelocities_[i] = glm::vec4(vel, 0.0f);
-    }
-
     auto t3 = Clock::now();
 
     // Store timing
@@ -1197,7 +1269,8 @@ void Simulation::stepEuler(WGPUDevice device, WGPUQueue queue, float dt,
     using Clock = std::chrono::high_resolution_clock;
     auto t0 = Clock::now();
 
-    // Build octree on CPU
+    // Readback positions from GPU, then build octree on CPU
+    readbackState(device, queue, cpuPositions_, cpuVelocities_);
     octree_.build(cpuPositions_);
     size_t nodeCount = octree_.nodeCount();
     if (nodeCount == 0) return;
@@ -1304,20 +1377,6 @@ void Simulation::stepEuler(WGPUDevice device, WGPUQueue queue, float dt,
 
     auto t2 = Clock::now();
 
-    // CPU mirror: BH traversal + Euler integration
-    cpuBarnesHut(softening, theta);
-    for (int i = 0; i < numParticles_; i++) {
-        glm::vec3 pos(cpuPositions_[i]);
-        glm::vec3 vel(cpuVelocities_[i]);
-        glm::vec3 acc(cpuAccelerations_[i]);
-
-        vel += acc * dt;
-        pos += vel * dt;
-        float m = cpuPositions_[i].w;
-        cpuPositions_[i] = glm::vec4(pos, m);
-        cpuVelocities_[i] = glm::vec4(vel, 0.0f);
-    }
-
     auto t3 = Clock::now();
 
     wgpuBindGroupRelease(forceBG);
@@ -1359,21 +1418,6 @@ void Simulation::stepWithDirectForce(WGPUDevice device, WGPUQueue queue,
     params.paddedN = 0;
     params._pad[0] = params._pad[1] = 0.0f;
     paramsBuffer_.upload(queue, &params, sizeof(params));
-
-    // CPU mirror: half-kick + drift
-    for (int i = 0; i < numParticles_; i++) {
-        glm::vec3 vel(cpuVelocities_[i]);
-        glm::vec3 acc(cpuAccelerations_[i]);
-        vel += acc * (dt * 0.5f);
-        cpuVelocities_[i] = glm::vec4(vel, 0.0f);
-    }
-    for (int i = 0; i < numParticles_; i++) {
-        glm::vec3 pos(cpuPositions_[i]);
-        glm::vec3 vel(cpuVelocities_[i]);
-        float mass = cpuPositions_[i].w;
-        pos += vel * dt;
-        cpuPositions_[i] = glm::vec4(pos, mass);
-    }
 
     auto t1 = Clock::now();
 
@@ -1491,19 +1535,6 @@ void Simulation::stepWithDirectForce(WGPUDevice device, WGPUQueue queue,
         wgpuBindGroupRelease(directBG);
     }
 
-    // CPU mirror: direct force + second half-kick
-    // (Use BH for CPU mirror — this is approximate but avoids O(N²) on CPU)
-    octree_.build(cpuPositions_);
-    if (octree_.nodeCount() > 0) {
-        cpuBarnesHut(softening, theta);
-    }
-    for (int i = 0; i < numParticles_; i++) {
-        glm::vec3 vel(cpuVelocities_[i]);
-        glm::vec3 acc(cpuAccelerations_[i]);
-        vel += acc * (dt * 0.5f);
-        cpuVelocities_[i] = glm::vec4(vel, 0.0f);
-    }
-
     auto t2 = Clock::now();
 
     lastTiming_.treeBuildMs = 0.0;
@@ -1559,68 +1590,29 @@ void Simulation::stepLeapfrogGpuTree(WGPUDevice device, WGPUQueue queue,
     uint32_t wg256 = (numParticles_ + 255) / 256;
     uint32_t wg64 = (numParticles_ + 63) / 64;
 
+    // Ensure cached bind groups exist
+    ensureBindGroupsCached(device);
+
     // --- Half-kick pass ---
     {
-        WGPUBindGroupEntry kickBE[3] = {};
-        kickBE[0].binding = 0;
-        kickBE[0].buffer = paramsBuffer_.get();
-        kickBE[0].offset = 0;
-        kickBE[0].size = sizeof(params);
-        kickBE[1].binding = 1;
-        kickBE[1].buffer = velocities_.get();
-        kickBE[1].offset = 0;
-        kickBE[1].size = numParticles_ * sizeof(glm::vec4);
-        kickBE[2].binding = 2;
-        kickBE[2].buffer = accelerations_.get();
-        kickBE[2].offset = 0;
-        kickBE[2].size = numParticles_ * sizeof(glm::vec4);
-
-        WGPUBindGroupDescriptor kickBGD{};
-        kickBGD.layout = kickBindGroupLayout_;
-        kickBGD.entryCount = 3;
-        kickBGD.entries = kickBE;
-        WGPUBindGroup kickBG = wgpuDeviceCreateBindGroup(device, &kickBGD);
-
         WGPUComputePassEncoder kickPass =
             wgpuCommandEncoderBeginComputePass(encoder, &passDesc);
         wgpuComputePassEncoderSetPipeline(kickPass, kickPipeline_);
-        wgpuComputePassEncoderSetBindGroup(kickPass, 0, kickBG, 0, nullptr);
+        wgpuComputePassEncoderSetBindGroup(kickPass, 0, cachedKickBG_, 0, nullptr);
         wgpuComputePassEncoderDispatchWorkgroups(kickPass, wg256, 1, 1);
         wgpuComputePassEncoderEnd(kickPass);
         wgpuComputePassEncoderRelease(kickPass);
-        wgpuBindGroupRelease(kickBG);
     }
 
     // --- Drift pass ---
     {
-        WGPUBindGroupEntry driftBE[3] = {};
-        driftBE[0].binding = 0;
-        driftBE[0].buffer = paramsBuffer_.get();
-        driftBE[0].offset = 0;
-        driftBE[0].size = sizeof(params);
-        driftBE[1].binding = 1;
-        driftBE[1].buffer = positions_.get();
-        driftBE[1].offset = 0;
-        driftBE[1].size = numParticles_ * sizeof(glm::vec4);
-        driftBE[2].binding = 2;
-        driftBE[2].buffer = velocities_.get();
-        driftBE[2].offset = 0;
-        driftBE[2].size = numParticles_ * sizeof(glm::vec4);
-
-        WGPUBindGroupDescriptor driftBGD{};
-        driftBGD.layout = driftBindGroupLayout_;
-        driftBGD.entryCount = 3;
-        driftBGD.entries = driftBE;
-        WGPUBindGroup driftBG = wgpuDeviceCreateBindGroup(device, &driftBGD);
-
         WGPUComputePassEncoder driftPass =
             wgpuCommandEncoderBeginComputePass(encoder, &passDesc);
         wgpuComputePassEncoderSetPipeline(driftPass, driftPipeline_);
-        wgpuComputePassEncoderSetBindGroup(driftPass, 0, driftBG, 0, nullptr);
+        wgpuComputePassEncoderSetBindGroup(driftPass, 0, cachedDriftBG_, 0, nullptr);
         wgpuComputePassEncoderDispatchWorkgroups(driftPass, wg256, 1, 1);
         wgpuComputePassEncoderEnd(driftPass);
         wgpuComputePassEncoderRelease(driftPass);
-        wgpuBindGroupRelease(driftBG);
     }
 
     auto t2 = Clock::now();
@@ -1633,70 +1625,24 @@ void Simulation::stepLeapfrogGpuTree(WGPUDevice device, WGPUQueue queue,
 
     // --- BVH force pass ---
     {
-        WGPUBindGroupEntry bvhBE[4] = {};
-        bvhBE[0].binding = 0;
-        bvhBE[0].buffer = paramsBuffer_.get();
-        bvhBE[0].offset = 0;
-        bvhBE[0].size = sizeof(params);
-        bvhBE[1].binding = 1;
-        bvhBE[1].buffer = positions_.get();
-        bvhBE[1].offset = 0;
-        bvhBE[1].size = numParticles_ * sizeof(glm::vec4);
-        bvhBE[2].binding = 2;
-        bvhBE[2].buffer = gpuTreeBuilder_.getBvhNodesBuffer();
-        bvhBE[2].offset = 0;
-        bvhBE[2].size = nodeCount * sizeof(BVHNodeGPU);
-        bvhBE[3].binding = 3;
-        bvhBE[3].buffer = accelerations_.get();
-        bvhBE[3].offset = 0;
-        bvhBE[3].size = numParticles_ * sizeof(glm::vec4);
-
-        WGPUBindGroupDescriptor bvhBGD{};
-        bvhBGD.layout = bvhForceBindGroupLayout_;
-        bvhBGD.entryCount = 4;
-        bvhBGD.entries = bvhBE;
-        WGPUBindGroup bvhBG = wgpuDeviceCreateBindGroup(device, &bvhBGD);
-
         WGPUComputePassEncoder forcePass =
             wgpuCommandEncoderBeginComputePass(encoder, &passDesc);
         wgpuComputePassEncoderSetPipeline(forcePass, bvhForcePipeline_);
-        wgpuComputePassEncoderSetBindGroup(forcePass, 0, bvhBG, 0, nullptr);
+        wgpuComputePassEncoderSetBindGroup(forcePass, 0, cachedBvhForceBG_, 0, nullptr);
         wgpuComputePassEncoderDispatchWorkgroups(forcePass, wg64, 1, 1);
         wgpuComputePassEncoderEnd(forcePass);
         wgpuComputePassEncoderRelease(forcePass);
-        wgpuBindGroupRelease(bvhBG);
     }
 
-    // --- Second half-kick pass ---
+    // --- Second half-kick pass (reuses cached kick bind group) ---
     {
-        WGPUBindGroupEntry kickBE[3] = {};
-        kickBE[0].binding = 0;
-        kickBE[0].buffer = paramsBuffer_.get();
-        kickBE[0].offset = 0;
-        kickBE[0].size = sizeof(params);
-        kickBE[1].binding = 1;
-        kickBE[1].buffer = velocities_.get();
-        kickBE[1].offset = 0;
-        kickBE[1].size = numParticles_ * sizeof(glm::vec4);
-        kickBE[2].binding = 2;
-        kickBE[2].buffer = accelerations_.get();
-        kickBE[2].offset = 0;
-        kickBE[2].size = numParticles_ * sizeof(glm::vec4);
-
-        WGPUBindGroupDescriptor kickBGD{};
-        kickBGD.layout = kickBindGroupLayout_;
-        kickBGD.entryCount = 3;
-        kickBGD.entries = kickBE;
-        WGPUBindGroup kickBG = wgpuDeviceCreateBindGroup(device, &kickBGD);
-
         WGPUComputePassEncoder kickPass =
             wgpuCommandEncoderBeginComputePass(encoder, &passDesc);
         wgpuComputePassEncoderSetPipeline(kickPass, kickPipeline_);
-        wgpuComputePassEncoderSetBindGroup(kickPass, 0, kickBG, 0, nullptr);
+        wgpuComputePassEncoderSetBindGroup(kickPass, 0, cachedKickBG_, 0, nullptr);
         wgpuComputePassEncoderDispatchWorkgroups(kickPass, wg256, 1, 1);
         wgpuComputePassEncoderEnd(kickPass);
         wgpuComputePassEncoderRelease(kickPass);
-        wgpuBindGroupRelease(kickBG);
     }
 
     // Submit everything

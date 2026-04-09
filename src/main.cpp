@@ -207,26 +207,14 @@ public:
             gui_.setForceMs(timing.forceMs);
             gui_.setIntegrateMs(timing.integrateMs);
 
-            bool useGpuTree =
-                simulation_.getTreeMethod() == TreeMethod::GPU &&
-                simulation_.getIntegrator() == Integrator::Leapfrog;
-
-            bool shouldDiag = !useGpuTree ||
-                              (stepCount_ % diagInterval_ == 0);
+            bool shouldDiag = (stepCount_ % diagInterval_ == 0);
 
             if (shouldDiag) {
                 bool computePotential = (params.numParticles <= 5000);
-                if (useGpuTree) {
-                    std::vector<glm::vec4> pos, vel;
-                    simulation_.readbackState(device_, queue_, pos, vel);
-                    lastDiag_ = diagnostics_.compute(
-                        pos, vel, params.softening, computePotential);
-                } else {
-                    lastDiag_ = diagnostics_.compute(
-                        simulation_.getCpuPositions(),
-                        simulation_.getCpuVelocities(),
-                        params.softening, computePotential);
-                }
+                std::vector<glm::vec4> pos, vel;
+                simulation_.readbackState(device_, queue_, pos, vel);
+                lastDiag_ = diagnostics_.compute(
+                    pos, vel, params.softening, computePotential);
             }
 
             gui_.setKineticEnergy(lastDiag_.kineticEnergy);
@@ -382,8 +370,6 @@ static void runHeadless(const Config &config) {
 
     double simTime = 0.0;
     bool computePotential = (config.numParticles <= 5000);
-    bool useGpuTree = config.treeMethod == TreeMethod::GPU &&
-                      config.integrator == Integrator::Leapfrog;
     int diagInterval = exporter.isOpen() ? 1 : 50;
     Diagnostics lastDiag{};
 
@@ -418,23 +404,13 @@ static void runHeadless(const Config &config) {
 
         bool isProgressStep = config.maxSteps >= 10 &&
                               (step + 1) % (config.maxSteps / 10) == 0;
-        bool shouldDiag = !useGpuTree ||
-                          ((step + 1) % diagInterval == 0) ||
-                          isProgressStep;
+        bool shouldDiag = ((step + 1) % diagInterval == 0) || isProgressStep;
 
         if (shouldDiag) {
-            if (useGpuTree) {
-                std::vector<glm::vec4> pos, vel;
-                simulation.readbackState(device, queue, pos, vel);
-                lastDiag = diagnostics.compute(pos, vel,
-                                               config.softening,
-                                               computePotential);
-            } else {
-                lastDiag = diagnostics.compute(
-                    simulation.getCpuPositions(),
-                    simulation.getCpuVelocities(),
-                    config.softening, computePotential);
-            }
+            std::vector<glm::vec4> pos, vel;
+            simulation.readbackState(device, queue, pos, vel);
+            lastDiag = diagnostics.compute(pos, vel, config.softening,
+                                           computePotential);
         }
 
         if (exporter.isOpen() && shouldDiag) {
@@ -453,17 +429,10 @@ static void runHeadless(const Config &config) {
     exporter.close();
 
     // Final diagnostics
-    Diagnostics final_diag;
-    if (useGpuTree) {
-        std::vector<glm::vec4> pos, vel;
-        simulation.readbackState(device, queue, pos, vel);
-        final_diag = diagnostics.compute(pos, vel,
-                                          config.softening, computePotential);
-    } else {
-        final_diag = diagnostics.compute(
-            simulation.getCpuPositions(), simulation.getCpuVelocities(),
-            config.softening, computePotential);
-    }
+    std::vector<glm::vec4> finalPos, finalVel;
+    simulation.readbackState(device, queue, finalPos, finalVel);
+    Diagnostics final_diag = diagnostics.compute(
+        finalPos, finalVel, config.softening, computePotential);
     spdlog::info("Finished. Final energy drift: {:.6e}",
                  final_diag.energyDrift);
     spdlog::info("Final |momentum|: {:.6e}", final_diag.momentumMagnitude);

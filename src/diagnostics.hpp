@@ -10,6 +10,11 @@ struct Diagnostics {
     double energyDrift = 0.0; // |E(t) - E(0)| / |E(0)|
     glm::dvec3 totalMomentum{0.0};
     double momentumMagnitude = 0.0;
+
+    // Two-body validation metrics
+    double separation = 0.0;         // distance between the two bodies
+    double orbitalPeriodEstimate = 0.0; // analytic Kepler period
+    double eccentricity = 0.0;       // orbital eccentricity
 };
 
 class DiagnosticsCalculator {

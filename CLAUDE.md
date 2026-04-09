@@ -32,9 +32,9 @@ Backend selection: `-DWEBGPU_BACKEND=WGPU` (default) or `DAWN` or `EMSCRIPTEN`.
 
 ## Architecture
 
-### CPU-GPU Hybrid Dual-Track
+### GPU-Primary Architecture
 
-The core design runs **equivalent physics on both CPU and GPU in parallel every step**. The CPU maintains mirror arrays (`cpuPositions_`, `cpuVelocities_`, `cpuAccelerations_`) that track GPU state. This avoids expensive GPU readbacks — the CPU mirror is used for octree construction and diagnostics.
+All physics runs on the GPU. The CPU tree path reads back positions via staging buffers when it needs to build an octree. Diagnostics always use GPU readback. Bind groups are cached and only recreated when particle count changes.
 
 ### Simulation Step (KDK Leapfrog)
 
@@ -70,7 +70,7 @@ Particles are rendered as instanced billboard quads (6 vertices each) with addit
 
 | File | Role |
 |------|------|
-| `simulation.cpp` | Physics engine: shaders, scenarios, integrators, CPU-GPU step logic |
+| `simulation.cpp` | Physics engine: shaders, scenarios, integrators, GPU step logic |
 | `octree.cpp` | CPU octree: recursive insert, COM propagation, flatten to GPU layout |
 | `particle_renderer.cpp` | WebGPU render pipeline with embedded WGSL vertex/fragment shader |
 | `main.cpp` | Application class (interactive) + `runHeadless()` (batch) |
@@ -90,6 +90,19 @@ struct OctreeNode {
 
 The GPU force shader traverses this with an explicit stack (depth 64) using the Barnes-Hut opening criterion: `halfWidth² / distSq < θ²`.
 
+### BVHNodeGPU Layout (64 bytes, float32 bounds)
+
+```cpp
+struct BVHNodeGPU {
+    glm::vec4 centerOfMass;  // xyz = COM, w = mass
+    glm::vec4 boundsMin;     // xyz = AABB min
+    glm::vec4 boundsMax;     // xyz = AABB max
+    int32_t left, right, parent, particleIdx;
+};
+```
+
+Float32 bounds avoid quantization artifacts that caused force accuracy degradation in dense particle clusters. The BVH force shader uses a mass-adaptive opening criterion: `halfExtent = comToCornerRadius * (1 + 0.6 * log2(mass))`, which compensates for the BVH's deeper binary tree (log2 N vs octree's log8 N levels).
+
 ### Params Uniform Buffer Layout (32 bytes)
 
 ```
@@ -108,5 +121,5 @@ This struct must match between C++ (`alignas(16)`) and WGSL exactly.
 - WebGPU C API throughout (raw `WGPUDevice`, `WGPUBuffer`, etc.) — no C++ wrapper libraries
 - Supports native (wgpu/Dawn) and WASM (Emscripten) from the same CMakeLists.txt
 - Each source file is built as its own static library in CMake, then linked into the final executable
-- Bind groups are created fresh each frame (no caching)
+- Bind groups are cached and reused; only recreated when particle count changes
 - `Buffer::upload()` auto-resizes if capacity is exceeded
