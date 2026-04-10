@@ -1015,6 +1015,7 @@ void GpuTreeBuilder::invalidateBindGroups() {
     release(cachedKarrasBG_);
     release(cachedLeafInitBG_);
     release(cachedAggregateBG_);
+    release(cachedCompactBG_);
     cachedBGParticleCount_ = 0;
     cachedPositionsBuffer_ = nullptr;
     cachedParamsBuffer_ = nullptr;
@@ -1026,7 +1027,16 @@ void GpuTreeBuilder::ensureBindGroupsCached(WGPUDevice device,
                                              uint32_t numParticles) {
     if (cachedBGParticleCount_ == numParticles &&
         cachedPositionsBuffer_ == positionsBuffer &&
-        cachedParamsBuffer_ == paramsBuffer) return;
+        cachedParamsBuffer_ == paramsBuffer) {
+        spdlog::info("[TREE-BG] Cache hit: N={} pos={} params={}", numParticles,
+            (void*)positionsBuffer, (void*)paramsBuffer);
+        return;
+    }
+
+    spdlog::info("[TREE-BG] Cache miss: cachedN={} newN={} cachedPos={} newPos={} cachedParams={} newParams={}",
+        cachedBGParticleCount_, numParticles,
+        (void*)cachedPositionsBuffer_, (void*)positionsBuffer,
+        (void*)cachedParamsBuffer_, (void*)paramsBuffer);
 
     invalidateBindGroups();
 
@@ -1038,13 +1048,33 @@ void GpuTreeBuilder::ensureBindGroupsCached(WGPUDevice device,
     uint32_t histogramSize = histElements * sizeof(uint32_t);
     uint32_t numScanWG = (histElements + 511) / 512;
 
-    auto makeBG = [&](WGPUBindGroupLayout layout,
+    spdlog::info("[TREE-BG] Recreating: paddedN={} numNodes={} numWG={} numHistWG={} histSize={} numScanWG={}",
+        paddedN, numNodes, numWorkgroups, numHistWG, histogramSize, numScanWG);
+
+    // Log all internal buffer handles + sizes
+    spdlog::info("[TREE-BG] Internal buffers: bboxPartial={} bboxResult={} mortonCodes={} sortIndices={}",
+        (void*)bboxPartial_.get(), (void*)bboxResult_.get(),
+        (void*)mortonCodes_.get(), (void*)sortIndices_.get());
+    spdlog::info("[TREE-BG] Internal buffers: bvhNodes={} traversalNodes={} atomicCounters={} histogram={}",
+        (void*)bvhNodes_.get(), (void*)traversalNodes_.get(),
+        (void*)atomicCounters_.get(), (void*)histogram_.get());
+    spdlog::info("[TREE-BG] Internal buffers: blockSums={} blockSumsOfSums={} mortonCodesAlt={} sortIndicesAlt={}",
+        (void*)blockSums_.get(), (void*)blockSumsOfSums_.get(),
+        (void*)mortonCodesAlt_.get(), (void*)sortIndicesAlt_.get());
+    spdlog::info("[TREE-BG] Internal buffers: radixParams={} scanParams={} numWorkgroupsBuf={}",
+        (void*)radixParamsBuffer_.get(), (void*)scanParamsBuffer_.get(),
+        (void*)numWorkgroupsBuffer_.get());
+    spdlog::info("[TREE-BG] maxParticles={}", maxParticles_);
+
+    auto makeBG = [&](const char* name, WGPUBindGroupLayout layout,
                       WGPUBindGroupEntry *entries, uint32_t count) -> WGPUBindGroup {
         WGPUBindGroupDescriptor desc{};
         desc.layout = layout;
         desc.entryCount = count;
         desc.entries = entries;
-        return wgpuDeviceCreateBindGroup(device, &desc);
+        WGPUBindGroup bg = wgpuDeviceCreateBindGroup(device, &desc);
+        spdlog::info("[TREE-BG]   {} -> {}", name, (void*)bg);
+        return bg;
     };
 
     auto entry = [](uint32_t binding, WGPUBuffer buffer, uint64_t size) -> WGPUBindGroupEntry {
@@ -1062,7 +1092,7 @@ void GpuTreeBuilder::ensureBindGroupsCached(WGPUDevice device,
             entry(1, positionsBuffer, numParticles * 16),
             entry(2, bboxPartial_.get(), numWorkgroups * 2 * 16),
         };
-        cachedBboxPass1BG_ = makeBG(bboxPass1Layout_, e, 3);
+        cachedBboxPass1BG_ = makeBG("bboxPass1", bboxPass1Layout_, e, 3);
     }
 
     // Bbox pass 2
@@ -1072,7 +1102,7 @@ void GpuTreeBuilder::ensureBindGroupsCached(WGPUDevice device,
             entry(1, bboxResult_.get(), 2 * 16),
             entry(2, numWorkgroupsBuffer_.get(), sizeof(uint32_t)),
         };
-        cachedBboxPass2BG_ = makeBG(bboxPass2Layout_, e, 3);
+        cachedBboxPass2BG_ = makeBG("bboxPass2", bboxPass2Layout_, e, 3);
     }
 
     // Morton
@@ -1084,7 +1114,7 @@ void GpuTreeBuilder::ensureBindGroupsCached(WGPUDevice device,
             entry(3, mortonCodes_.get(), paddedN * 4),
             entry(4, sortIndices_.get(), paddedN * 4),
         };
-        cachedMortonBG_ = makeBG(mortonLayout_, e, 5);
+        cachedMortonBG_ = makeBG("morton", mortonLayout_, e, 5);
     }
 
     // Scan BG1 (histogram -> blockSums)
@@ -1094,7 +1124,7 @@ void GpuTreeBuilder::ensureBindGroupsCached(WGPUDevice device,
             entry(1, histogram_.get(), histogramSize),
             entry(2, blockSums_.get(), numScanWG * 4),
         };
-        cachedScanBG1_ = makeBG(prefixScanLayout_, e, 3);
+        cachedScanBG1_ = makeBG("scanBG1", prefixScanLayout_, e, 3);
     }
 
     // Scan BG2 (blockSums -> blockSumsOfSums)
@@ -1104,7 +1134,7 @@ void GpuTreeBuilder::ensureBindGroupsCached(WGPUDevice device,
             entry(1, blockSums_.get(), numScanWG * 4),
             entry(2, blockSumsOfSums_.get(), 4),
         };
-        cachedScanBG2_ = makeBG(prefixScanLayout_, e, 3);
+        cachedScanBG2_ = makeBG("scanBG2", prefixScanLayout_, e, 3);
     }
 
     // Propagate
@@ -1114,7 +1144,7 @@ void GpuTreeBuilder::ensureBindGroupsCached(WGPUDevice device,
             entry(1, histogram_.get(), histogramSize),
             entry(2, blockSums_.get(), numScanWG * 4),
         };
-        cachedPropagateBG_ = makeBG(prefixPropagateLayout_, e, 3);
+        cachedPropagateBG_ = makeBG("propagate", prefixPropagateLayout_, e, 3);
     }
 
     // Radix histogram bind groups (2 variants: even/odd pass)
@@ -1125,7 +1155,7 @@ void GpuTreeBuilder::ensureBindGroupsCached(WGPUDevice device,
             entry(1, srcKeys, paddedN * 4),
             entry(2, histogram_.get(), histogramSize),
         };
-        cachedRadixHistBG_[p] = makeBG(radixHistogramLayout_, e, 3);
+        cachedRadixHistBG_[p] = makeBG(p == 0 ? "radixHist0" : "radixHist1", radixHistogramLayout_, e, 3);
     }
 
     // Radix scatter bind groups (2 variants: even/odd pass)
@@ -1142,7 +1172,7 @@ void GpuTreeBuilder::ensureBindGroupsCached(WGPUDevice device,
             entry(4, dstVals, paddedN * 4),
             entry(5, histogram_.get(), histogramSize),
         };
-        cachedRadixScatterBG_[p] = makeBG(radixScatterLayout_, e, 6);
+        cachedRadixScatterBG_[p] = makeBG(p == 0 ? "radixScatter0" : "radixScatter1", radixScatterLayout_, e, 6);
     }
 
     // Karras
@@ -1153,7 +1183,7 @@ void GpuTreeBuilder::ensureBindGroupsCached(WGPUDevice device,
             entry(2, bvhNodes_.get(), numNodes * kNodeSize),
             entry(3, atomicCounters_.get(), (numParticles - 1) * 4),
         };
-        cachedKarrasBG_ = makeBG(karrasLayout_, e, 4);
+        cachedKarrasBG_ = makeBG("karras", karrasLayout_, e, 4);
     }
 
     // Leaf init (float bounds, no bboxResult needed)
@@ -1164,7 +1194,7 @@ void GpuTreeBuilder::ensureBindGroupsCached(WGPUDevice device,
             entry(2, sortIndices_.get(), paddedN * 4),
             entry(3, bvhNodes_.get(), numNodes * kNodeSize),
         };
-        cachedLeafInitBG_ = makeBG(leafInitLayout_, e, 4);
+        cachedLeafInitBG_ = makeBG("leafInit", leafInitLayout_, e, 4);
     }
 
     // Aggregate
@@ -1174,7 +1204,7 @@ void GpuTreeBuilder::ensureBindGroupsCached(WGPUDevice device,
             entry(1, bvhNodes_.get(), numNodes * kNodeSize),
             entry(2, atomicCounters_.get(), (numParticles - 1) * 4),
         };
-        cachedAggregateBG_ = makeBG(aggregateLayout_, e, 3);
+        cachedAggregateBG_ = makeBG("aggregate", aggregateLayout_, e, 3);
     }
 
     // Compact (copy to traversal nodes)
@@ -1184,7 +1214,7 @@ void GpuTreeBuilder::ensureBindGroupsCached(WGPUDevice device,
             entry(1, bvhNodes_.get(), numNodes * kNodeSize),
             entry(2, traversalNodes_.get(), numNodes * kTraversalNodeSize),
         };
-        cachedCompactBG_ = makeBG(compactLayout_, e, 3);
+        cachedCompactBG_ = makeBG("compact", compactLayout_, e, 3);
     }
 
     cachedBGParticleCount_ = numParticles;

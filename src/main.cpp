@@ -170,8 +170,10 @@ public:
 
         // Handle particle count change
         if (params.numParticles != lastParticleCount_) {
+            spdlog::info("[MAIN] Particle count changed: {} -> {}", lastParticleCount_, params.numParticles);
             config_.numParticles = params.numParticles;
             simulation_.reinitialize(device_, queue_, config_);
+            spdlog::info("[MAIN] reinitialize() returned OK");
             diagnostics_.reset();
             lastParticleCount_ = params.numParticles;
             stepCount_ = 0;
@@ -181,8 +183,10 @@ public:
         // Simulation step
         bool shouldStep = !params.paused || params.stepOnce;
         if (shouldStep) {
+            spdlog::info("[MAIN] Calling step(), paused={}, stepOnce={}", params.paused, params.stepOnce);
             simulation_.step(device_, queue_, params.dt, params.softening,
                              params.theta);
+            spdlog::info("[MAIN] step() returned OK");
             params.stepOnce = false;
             stepCount_++;
             simTime_ += params.dt;

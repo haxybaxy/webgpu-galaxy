@@ -1,0 +1,6 @@
+backend,force_method,integrator,theta,softening,n,steps,total_ms,avg_step_ms,std_step_ms,ci95_ms,cv,bodies_per_sec
+Metal,Barnes-Hut,Leapfrog,0.75,0.5,1000,100,294.247,2.942,0.846,0.166,0.2876,339851
+Metal,Barnes-Hut,Leapfrog,0.75,0.5,5000,100,1008.811,10.088,1.473,0.289,0.1460,495633
+Metal,Barnes-Hut,Leapfrog,0.75,0.5,10000,100,2135.043,21.350,16.014,3.139,0.7501,468375
+Metal,Barnes-Hut,Leapfrog,0.75,0.5,50000,100,12176.486,121.765,78.711,15.427,0.6464,410628
+Metal,Barnes-Hut,Leapfrog,0.75,0.5,100000,100,51677.953,516.780,72.252,14.161,0.1398,193506
