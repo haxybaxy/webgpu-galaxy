@@ -141,7 +141,6 @@ def fig1_n_scaling_plummer(fig_dir, bench_dir):
     ax.legend(fontsize=8)
 
     path = os.path.join(fig_dir, "fig_n_scaling_plummer")
-    fig.savefig(path + ".pdf")
     fig.savefig(path + ".png")
     plt.close(fig)
     print(f"  Saved: {path}.{{pdf,png}}")
@@ -204,7 +203,6 @@ def fig2_crossover(fig_dir, bench_dir):
     ax1.set_title("Direct vs Tree: Runtime and Energy Conservation")
 
     path = os.path.join(fig_dir, "fig_crossover")
-    fig.savefig(path + ".pdf")
     fig.savefig(path + ".png")
     plt.close(fig)
     print(f"  Saved: {path}.{{pdf,png}}")
@@ -253,7 +251,6 @@ def fig3_web_native(fig_dir, bench_dir):
     ax.legend(fontsize=8)
 
     path = os.path.join(fig_dir, "fig_web_native")
-    fig.savefig(path + ".pdf")
     fig.savefig(path + ".png")
     plt.close(fig)
     print(f"  Saved: {path}.{{pdf,png}}")
@@ -307,7 +304,6 @@ def fig4_lbvh_breakdown(fig_dir, bench_dir):
     ax.legend(fontsize=7, loc="upper left")
 
     path = os.path.join(fig_dir, "fig_lbvh_breakdown")
-    fig.savefig(path + ".pdf")
     fig.savefig(path + ".png")
     plt.close(fig)
     print(f"  Saved: {path}.{{pdf,png}}")
@@ -360,7 +356,6 @@ def fig5_cross_backend(fig_dir, bench_dir):
     ax.legend(fontsize=8)
 
     path = os.path.join(fig_dir, "fig_cross_backend")
-    fig.savefig(path + ".pdf")
     fig.savefig(path + ".png")
     plt.close(fig)
     print(f"  Saved: {path}.{{pdf,png}}")
