@@ -59,6 +59,68 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
 }
 )";
 
+static const char *kFadeShaderSource = R"(
+struct FadeParams {
+    alpha: f32,
+}
+
+@group(0) @binding(0) var<uniform> params: FadeParams;
+
+@vertex
+fn vs_fade(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4f {
+    var pos = array<vec2f, 3>(vec2f(-1.0, -1.0), vec2f(3.0, -1.0), vec2f(-1.0, 3.0));
+    return vec4f(pos[vi], 0.0, 1.0);
+}
+
+@fragment
+fn fs_fade() -> @location(0) vec4f {
+    return vec4f(0.01, 0.01, 0.02, params.alpha);
+}
+)";
+
+static const char *kReprojShaderSource = R"(
+struct ReprojUniforms {
+    reprojMatrix: mat4x4f,
+}
+
+@group(0) @binding(0) var<uniform> reproj: ReprojUniforms;
+@group(0) @binding(1) var trailSampler: sampler;
+@group(0) @binding(2) var trailTex: texture_2d<f32>;
+
+struct VSOut {
+    @builtin(position) position: vec4f,
+    @location(0) uv: vec2f,
+}
+
+@vertex
+fn vs_reproj(@builtin(vertex_index) vi: u32) -> VSOut {
+    var pos = array<vec2f, 3>(vec2f(-1.0, -1.0), vec2f(3.0, -1.0), vec2f(-1.0, 3.0));
+    var out: VSOut;
+    out.position = vec4f(pos[vi], 0.0, 1.0);
+    out.uv = pos[vi] * 0.5 + 0.5;
+    out.uv.y = 1.0 - out.uv.y;
+    return out;
+}
+
+@fragment
+fn fs_reproj(input: VSOut) -> @location(0) vec4f {
+    let z_ref: f32 = 0.5;
+    let ndc = vec2f(input.uv.x * 2.0 - 1.0, (1.0 - input.uv.y) * 2.0 - 1.0);
+    let clipCurrent = vec4f(ndc, z_ref, 1.0);
+
+    let clipPrev = reproj.reprojMatrix * clipCurrent;
+    let ndcPrev = clipPrev.xy / clipPrev.w;
+
+    let uvPrev = vec2f(ndcPrev.x * 0.5 + 0.5, 1.0 - (ndcPrev.y * 0.5 + 0.5));
+
+    if (uvPrev.x < 0.0 || uvPrev.x > 1.0 || uvPrev.y < 0.0 || uvPrev.y > 1.0) {
+        return vec4f(0.0, 0.0, 0.0, 0.0);
+    }
+
+    return textureSampleLevel(trailTex, trailSampler, uvPrev, 0.0);
+}
+)";
+
 void ParticleRenderer::createDepthTexture(WGPUDevice device, int width, int height) {
     if (depthTexture_) {
         wgpuTextureViewRelease(depthTextureView_);
@@ -198,6 +260,240 @@ void ParticleRenderer::initialize(WGPUDevice device, WGPUTextureFormat surfaceFo
     uniformBuffer_.initialize(device,
         WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst, 64);
 
+    // --- Fade pipeline for trails ---
+    WGPUBindGroupLayoutEntry fadeEntry{};
+    fadeEntry.binding = 0;
+    fadeEntry.visibility = WGPUShaderStage_Fragment;
+    fadeEntry.buffer.type = WGPUBufferBindingType_Uniform;
+    fadeEntry.buffer.minBindingSize = 16;
+
+    WGPUBindGroupLayoutDescriptor fadeBGLDesc{};
+    fadeBGLDesc.entryCount = 1;
+    fadeBGLDesc.entries = &fadeEntry;
+    fadeBindGroupLayout_ = wgpuDeviceCreateBindGroupLayout(device, &fadeBGLDesc);
+
+    WGPUPipelineLayoutDescriptor fadePLDesc{};
+    fadePLDesc.bindGroupLayoutCount = 1;
+    fadePLDesc.bindGroupLayouts = &fadeBindGroupLayout_;
+    WGPUPipelineLayout fadePipelineLayout = wgpuDeviceCreatePipelineLayout(device, &fadePLDesc);
+
+    WGPUShaderModule fadeShader = wgpu_utils::createShaderModule(device, kFadeShaderSource);
+
+    WGPURenderPipelineDescriptor fadePipelineDesc{};
+    fadePipelineDesc.layout = fadePipelineLayout;
+
+    fadePipelineDesc.vertex.module = fadeShader;
+    fadePipelineDesc.vertex.entryPoint = "vs_fade";
+    fadePipelineDesc.vertex.bufferCount = 0;
+
+    fadePipelineDesc.primitive.topology = WGPUPrimitiveTopology_TriangleList;
+    fadePipelineDesc.primitive.stripIndexFormat = WGPUIndexFormat_Undefined;
+    fadePipelineDesc.primitive.frontFace = WGPUFrontFace_CCW;
+    fadePipelineDesc.primitive.cullMode = WGPUCullMode_None;
+
+    // Standard alpha blending for fade effect
+    WGPUBlendState fadeBlendState{};
+    fadeBlendState.color.srcFactor = WGPUBlendFactor_SrcAlpha;
+    fadeBlendState.color.dstFactor = WGPUBlendFactor_OneMinusSrcAlpha;
+    fadeBlendState.color.operation = WGPUBlendOperation_Add;
+    fadeBlendState.alpha.srcFactor = WGPUBlendFactor_One;
+    fadeBlendState.alpha.dstFactor = WGPUBlendFactor_OneMinusSrcAlpha;
+    fadeBlendState.alpha.operation = WGPUBlendOperation_Add;
+
+    WGPUColorTargetState fadeColorTarget{};
+    fadeColorTarget.format = surfaceFormat;
+    fadeColorTarget.blend = &fadeBlendState;
+    fadeColorTarget.writeMask = WGPUColorWriteMask_All;
+
+    WGPUFragmentState fadeFragmentState{};
+    fadeFragmentState.module = fadeShader;
+    fadeFragmentState.entryPoint = "fs_fade";
+    fadeFragmentState.targetCount = 1;
+    fadeFragmentState.targets = &fadeColorTarget;
+    fadePipelineDesc.fragment = &fadeFragmentState;
+
+    // Depth state: does nothing, but required for render pass compatibility
+    WGPUDepthStencilState fadeDepthStencil{};
+    fadeDepthStencil.format = WGPUTextureFormat_Depth24Plus;
+    fadeDepthStencil.depthWriteEnabled = false;
+    fadeDepthStencil.depthCompare = WGPUCompareFunction_Always;
+    fadeDepthStencil.stencilFront.compare = WGPUCompareFunction_Always;
+    fadeDepthStencil.stencilFront.failOp = WGPUStencilOperation_Keep;
+    fadeDepthStencil.stencilFront.depthFailOp = WGPUStencilOperation_Keep;
+    fadeDepthStencil.stencilFront.passOp = WGPUStencilOperation_Keep;
+    fadeDepthStencil.stencilBack = fadeDepthStencil.stencilFront;
+    fadeDepthStencil.stencilReadMask = 0;
+    fadeDepthStencil.stencilWriteMask = 0;
+    fadeDepthStencil.depthBias = 0;
+    fadeDepthStencil.depthBiasSlopeScale = 0.0f;
+    fadeDepthStencil.depthBiasClamp = 0.0f;
+    fadePipelineDesc.depthStencil = &fadeDepthStencil;
+
+    fadePipelineDesc.multisample.count = 1;
+    fadePipelineDesc.multisample.mask = ~0u;
+    fadePipelineDesc.multisample.alphaToCoverageEnabled = false;
+
+    fadePipeline_ = wgpuDeviceCreateRenderPipeline(device, &fadePipelineDesc);
+    wgpuShaderModuleRelease(fadeShader);
+    wgpuPipelineLayoutRelease(fadePipelineLayout);
+
+    fadeUniformBuffer_.initialize(device,
+        WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst, 16);
+
+    WGPUBindGroupEntry fadeBGEntry{};
+    fadeBGEntry.binding = 0;
+    fadeBGEntry.buffer = fadeUniformBuffer_.get();
+    fadeBGEntry.offset = 0;
+    fadeBGEntry.size = 16;
+
+    WGPUBindGroupDescriptor fadeBGDesc{};
+    fadeBGDesc.layout = fadeBindGroupLayout_;
+    fadeBGDesc.entryCount = 1;
+    fadeBGDesc.entries = &fadeBGEntry;
+    fadeBindGroup_ = wgpuDeviceCreateBindGroup(device, &fadeBGDesc);
+
+    // Trail accumulation textures (ping-pong pair, persistent across frames)
+    WGPUTextureDescriptor trailDesc{};
+    trailDesc.dimension = WGPUTextureDimension_2D;
+    trailDesc.format = surfaceFormat;
+    trailDesc.mipLevelCount = 1;
+    trailDesc.sampleCount = 1;
+    trailDesc.size = {static_cast<uint32_t>(width), static_cast<uint32_t>(height), 1};
+    trailDesc.usage = WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_CopySrc | WGPUTextureUsage_TextureBinding;
+    trailWidth_ = static_cast<uint32_t>(width);
+    trailHeight_ = static_cast<uint32_t>(height);
+
+    WGPUTextureViewDescriptor trailViewDesc{};
+    trailViewDesc.aspect = WGPUTextureAspect_All;
+    trailViewDesc.baseArrayLayer = 0;
+    trailViewDesc.arrayLayerCount = 1;
+    trailViewDesc.baseMipLevel = 0;
+    trailViewDesc.mipLevelCount = 1;
+    trailViewDesc.dimension = WGPUTextureViewDimension_2D;
+    trailViewDesc.format = surfaceFormat;
+
+    for (int i = 0; i < 2; i++) {
+        trailTextures_[i] = wgpuDeviceCreateTexture(device, &trailDesc);
+        trailTextureViews_[i] = wgpuTextureCreateView(trailTextures_[i], &trailViewDesc);
+    }
+    trailPingPong_ = 0;
+
+    // --- Reprojection pipeline for camera-independent trails ---
+    WGPUSamplerDescriptor samplerDesc{};
+    samplerDesc.addressModeU = WGPUAddressMode_ClampToEdge;
+    samplerDesc.addressModeV = WGPUAddressMode_ClampToEdge;
+    samplerDesc.addressModeW = WGPUAddressMode_ClampToEdge;
+    samplerDesc.magFilter = WGPUFilterMode_Linear;
+    samplerDesc.minFilter = WGPUFilterMode_Linear;
+    samplerDesc.mipmapFilter = WGPUMipmapFilterMode_Nearest;
+    samplerDesc.lodMinClamp = 0.0f;
+    samplerDesc.lodMaxClamp = 1.0f;
+    samplerDesc.maxAnisotropy = 1;
+    reprojSampler_ = wgpuDeviceCreateSampler(device, &samplerDesc);
+
+    WGPUBindGroupLayoutEntry reprojEntries[3] = {};
+    reprojEntries[0].binding = 0;
+    reprojEntries[0].visibility = WGPUShaderStage_Fragment;
+    reprojEntries[0].buffer.type = WGPUBufferBindingType_Uniform;
+    reprojEntries[0].buffer.minBindingSize = 64;
+    reprojEntries[1].binding = 1;
+    reprojEntries[1].visibility = WGPUShaderStage_Fragment;
+    reprojEntries[1].sampler.type = WGPUSamplerBindingType_Filtering;
+    reprojEntries[2].binding = 2;
+    reprojEntries[2].visibility = WGPUShaderStage_Fragment;
+    reprojEntries[2].texture.sampleType = WGPUTextureSampleType_Float;
+    reprojEntries[2].texture.viewDimension = WGPUTextureViewDimension_2D;
+    reprojEntries[2].texture.multisampled = false;
+
+    WGPUBindGroupLayoutDescriptor reprojBGLDesc{};
+    reprojBGLDesc.entryCount = 3;
+    reprojBGLDesc.entries = reprojEntries;
+    reprojBindGroupLayout_ = wgpuDeviceCreateBindGroupLayout(device, &reprojBGLDesc);
+
+    WGPUPipelineLayoutDescriptor reprojPLDesc{};
+    reprojPLDesc.bindGroupLayoutCount = 1;
+    reprojPLDesc.bindGroupLayouts = &reprojBindGroupLayout_;
+    WGPUPipelineLayout reprojPipelineLayout = wgpuDeviceCreatePipelineLayout(device, &reprojPLDesc);
+
+    WGPUShaderModule reprojShader = wgpu_utils::createShaderModule(device, kReprojShaderSource);
+
+    WGPURenderPipelineDescriptor reprojPipelineDesc{};
+    reprojPipelineDesc.layout = reprojPipelineLayout;
+    reprojPipelineDesc.vertex.module = reprojShader;
+    reprojPipelineDesc.vertex.entryPoint = "vs_reproj";
+    reprojPipelineDesc.vertex.bufferCount = 0;
+
+    reprojPipelineDesc.primitive.topology = WGPUPrimitiveTopology_TriangleList;
+    reprojPipelineDesc.primitive.stripIndexFormat = WGPUIndexFormat_Undefined;
+    reprojPipelineDesc.primitive.frontFace = WGPUFrontFace_CCW;
+    reprojPipelineDesc.primitive.cullMode = WGPUCullMode_None;
+
+    WGPUBlendState reprojBlend{};
+    reprojBlend.color.srcFactor = WGPUBlendFactor_One;
+    reprojBlend.color.dstFactor = WGPUBlendFactor_Zero;
+    reprojBlend.color.operation = WGPUBlendOperation_Add;
+    reprojBlend.alpha.srcFactor = WGPUBlendFactor_One;
+    reprojBlend.alpha.dstFactor = WGPUBlendFactor_Zero;
+    reprojBlend.alpha.operation = WGPUBlendOperation_Add;
+
+    WGPUColorTargetState reprojColorTarget{};
+    reprojColorTarget.format = surfaceFormat;
+    reprojColorTarget.blend = &reprojBlend;
+    reprojColorTarget.writeMask = WGPUColorWriteMask_All;
+
+    WGPUFragmentState reprojFragState{};
+    reprojFragState.module = reprojShader;
+    reprojFragState.entryPoint = "fs_reproj";
+    reprojFragState.targetCount = 1;
+    reprojFragState.targets = &reprojColorTarget;
+    reprojPipelineDesc.fragment = &reprojFragState;
+
+    WGPUDepthStencilState reprojDepth{};
+    reprojDepth.format = WGPUTextureFormat_Depth24Plus;
+    reprojDepth.depthWriteEnabled = false;
+    reprojDepth.depthCompare = WGPUCompareFunction_Always;
+    reprojDepth.stencilFront.compare = WGPUCompareFunction_Always;
+    reprojDepth.stencilFront.failOp = WGPUStencilOperation_Keep;
+    reprojDepth.stencilFront.depthFailOp = WGPUStencilOperation_Keep;
+    reprojDepth.stencilFront.passOp = WGPUStencilOperation_Keep;
+    reprojDepth.stencilBack = reprojDepth.stencilFront;
+    reprojDepth.stencilReadMask = 0;
+    reprojDepth.stencilWriteMask = 0;
+    reprojDepth.depthBias = 0;
+    reprojDepth.depthBiasSlopeScale = 0.0f;
+    reprojDepth.depthBiasClamp = 0.0f;
+    reprojPipelineDesc.depthStencil = &reprojDepth;
+
+    reprojPipelineDesc.multisample.count = 1;
+    reprojPipelineDesc.multisample.mask = ~0u;
+    reprojPipelineDesc.multisample.alphaToCoverageEnabled = false;
+
+    reprojPipeline_ = wgpuDeviceCreateRenderPipeline(device, &reprojPipelineDesc);
+    wgpuShaderModuleRelease(reprojShader);
+    wgpuPipelineLayoutRelease(reprojPipelineLayout);
+
+    reprojUniformBuffer_.initialize(device,
+        WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst, 64);
+
+    for (int i = 0; i < 2; i++) {
+        WGPUBindGroupEntry bgEntries[3] = {};
+        bgEntries[0].binding = 0;
+        bgEntries[0].buffer = reprojUniformBuffer_.get();
+        bgEntries[0].offset = 0;
+        bgEntries[0].size = 64;
+        bgEntries[1].binding = 1;
+        bgEntries[1].sampler = reprojSampler_;
+        bgEntries[2].binding = 2;
+        bgEntries[2].textureView = trailTextureViews_[i];
+
+        WGPUBindGroupDescriptor bgDesc{};
+        bgDesc.layout = reprojBindGroupLayout_;
+        bgDesc.entryCount = 3;
+        bgDesc.entries = bgEntries;
+        reprojBindGroups_[i] = wgpuDeviceCreateBindGroup(device, &bgDesc);
+    }
+    hasPrevViewProj_ = false;
+
     initialized_ = true;
     spdlog::info("Particle renderer initialized");
 }
@@ -207,7 +503,9 @@ void ParticleRenderer::render(WGPUDevice device, WGPUQueue queue,
                               WGPUBuffer positionBuffer, WGPUBuffer colorBuffer,
                               int particleCount,
                               const glm::mat4 &viewMatrix,
-                              const glm::mat4 &projMatrix) {
+                              const glm::mat4 &projMatrix,
+                              bool showTrails, float trailLength,
+                              WGPUTexture targetTexture) {
     if (!initialized_ || particleCount <= 0 || !pipeline_) return;
 
     glm::mat4 viewProj = projMatrix * viewMatrix;
@@ -244,16 +542,6 @@ void ParticleRenderer::render(WGPUDevice device, WGPUQueue queue,
 
     WGPUCommandEncoder encoder = wgpu_utils::createCommandEncoder(device);
 
-    WGPURenderPassColorAttachment colorAttachment{};
-    colorAttachment.view = targetView;
-    colorAttachment.resolveTarget = nullptr;
-    colorAttachment.loadOp = WGPULoadOp_Clear;
-    colorAttachment.storeOp = WGPUStoreOp_Store;
-    colorAttachment.clearValue = {0.01, 0.01, 0.02, 1.0};
-#ifndef WEBGPU_BACKEND_WGPU
-    colorAttachment.depthSlice = WGPU_DEPTH_SLICE_UNDEFINED;
-#endif
-
     WGPURenderPassDepthStencilAttachment depthAttachment{};
     depthAttachment.view = depthTextureView_;
     depthAttachment.depthLoadOp = WGPULoadOp_Clear;
@@ -263,17 +551,100 @@ void ParticleRenderer::render(WGPUDevice device, WGPUQueue queue,
     depthAttachment.stencilLoadOp = WGPULoadOp_Undefined;
     depthAttachment.stencilStoreOp = WGPUStoreOp_Undefined;
 
-    WGPURenderPassDescriptor passDesc{};
-    passDesc.colorAttachmentCount = 1;
-    passDesc.colorAttachments = &colorAttachment;
-    passDesc.depthStencilAttachment = &depthAttachment;
+    if (showTrails && trailTextureViews_[0]) {
+        int readIdx = 1 - trailPingPong_;
+        int writeIdx = trailPingPong_;
 
-    WGPURenderPassEncoder pass = wgpuCommandEncoderBeginRenderPass(encoder, &passDesc);
-    wgpuRenderPassEncoderSetPipeline(pass, pipeline_);
-    wgpuRenderPassEncoderSetBindGroup(pass, 0, cachedBindGroup_, 0, nullptr);
-    wgpuRenderPassEncoderDraw(pass, 6, static_cast<uint32_t>(particleCount), 0, 0);
-    wgpuRenderPassEncoderEnd(pass);
-    wgpuRenderPassEncoderRelease(pass);
+        WGPURenderPassColorAttachment colorAttachment{};
+        colorAttachment.view = trailTextureViews_[writeIdx];
+        colorAttachment.resolveTarget = nullptr;
+        colorAttachment.loadOp = WGPULoadOp_Clear;
+        colorAttachment.clearValue = {0.0, 0.0, 0.0, 0.0};
+        colorAttachment.storeOp = WGPUStoreOp_Store;
+#ifndef WEBGPU_BACKEND_WGPU
+        colorAttachment.depthSlice = WGPU_DEPTH_SLICE_UNDEFINED;
+#endif
+
+        WGPURenderPassDescriptor passDesc{};
+        passDesc.colorAttachmentCount = 1;
+        passDesc.colorAttachments = &colorAttachment;
+        passDesc.depthStencilAttachment = &depthAttachment;
+
+        WGPURenderPassEncoder pass = wgpuCommandEncoderBeginRenderPass(encoder, &passDesc);
+
+        // Reproject previous trail to current camera (skip first frame)
+        if (hasPrevViewProj_) {
+            glm::mat4 reprojMatrix = prevViewProj_ * glm::inverse(viewProj);
+            reprojUniformBuffer_.upload(queue, glm::value_ptr(reprojMatrix), 64);
+
+            wgpuRenderPassEncoderSetPipeline(pass, reprojPipeline_);
+            wgpuRenderPassEncoderSetBindGroup(pass, 0, reprojBindGroups_[readIdx], 0, nullptr);
+            wgpuRenderPassEncoderDraw(pass, 3, 1, 0, 0);
+        }
+
+        // Fade
+        float fadeAlpha = 1.0f - trailLength;
+        float fadeData[4] = {fadeAlpha, 0.0f, 0.0f, 0.0f};
+        fadeUniformBuffer_.upload(queue, fadeData, 16);
+        wgpuRenderPassEncoderSetPipeline(pass, fadePipeline_);
+        wgpuRenderPassEncoderSetBindGroup(pass, 0, fadeBindGroup_, 0, nullptr);
+        wgpuRenderPassEncoderDraw(pass, 3, 1, 0, 0);
+
+        // Particles
+        wgpuRenderPassEncoderSetPipeline(pass, pipeline_);
+        wgpuRenderPassEncoderSetBindGroup(pass, 0, cachedBindGroup_, 0, nullptr);
+        wgpuRenderPassEncoderDraw(pass, 6, static_cast<uint32_t>(particleCount), 0, 0);
+        wgpuRenderPassEncoderEnd(pass);
+        wgpuRenderPassEncoderRelease(pass);
+
+        // Copy trail texture to swapchain surface
+        if (targetTexture) {
+            WGPUImageCopyTexture src{};
+            src.texture = trailTextures_[writeIdx];
+            src.mipLevel = 0;
+            src.origin = {0, 0, 0};
+            src.aspect = WGPUTextureAspect_All;
+
+            WGPUImageCopyTexture dst{};
+            dst.texture = targetTexture;
+            dst.mipLevel = 0;
+            dst.origin = {0, 0, 0};
+            dst.aspect = WGPUTextureAspect_All;
+
+            WGPUExtent3D copySize = {trailWidth_, trailHeight_, 1};
+            wgpuCommandEncoderCopyTextureToTexture(encoder, &src, &dst, &copySize);
+        }
+
+        trailPingPong_ = 1 - trailPingPong_;
+        prevViewProj_ = viewProj;
+        hasPrevViewProj_ = true;
+
+    } else {
+        // Direct render to swapchain (no trails)
+        WGPURenderPassColorAttachment colorAttachment{};
+        colorAttachment.view = targetView;
+        colorAttachment.resolveTarget = nullptr;
+        colorAttachment.loadOp = WGPULoadOp_Clear;
+        colorAttachment.clearValue = {0.01, 0.01, 0.02, 1.0};
+        colorAttachment.storeOp = WGPUStoreOp_Store;
+#ifndef WEBGPU_BACKEND_WGPU
+        colorAttachment.depthSlice = WGPU_DEPTH_SLICE_UNDEFINED;
+#endif
+
+        WGPURenderPassDescriptor passDesc{};
+        passDesc.colorAttachmentCount = 1;
+        passDesc.colorAttachments = &colorAttachment;
+        passDesc.depthStencilAttachment = &depthAttachment;
+
+        WGPURenderPassEncoder pass = wgpuCommandEncoderBeginRenderPass(encoder, &passDesc);
+        wgpuRenderPassEncoderSetPipeline(pass, pipeline_);
+        wgpuRenderPassEncoderSetBindGroup(pass, 0, cachedBindGroup_, 0, nullptr);
+        wgpuRenderPassEncoderDraw(pass, 6, static_cast<uint32_t>(particleCount), 0, 0);
+        wgpuRenderPassEncoderEnd(pass);
+        wgpuRenderPassEncoderRelease(pass);
+
+        hasPrevViewProj_ = false;
+    }
 
     wgpu_utils::finishCommandEncoder(queue, encoder);
 }
@@ -283,6 +654,47 @@ void ParticleRenderer::cleanup() {
         wgpuBindGroupRelease(cachedBindGroup_);
         cachedBindGroup_ = nullptr;
     }
+    if (fadeBindGroup_) {
+        wgpuBindGroupRelease(fadeBindGroup_);
+        fadeBindGroup_ = nullptr;
+    }
+    if (fadePipeline_) {
+        wgpuRenderPipelineRelease(fadePipeline_);
+        fadePipeline_ = nullptr;
+    }
+    if (fadeBindGroupLayout_) {
+        wgpuBindGroupLayoutRelease(fadeBindGroupLayout_);
+        fadeBindGroupLayout_ = nullptr;
+    }
+    for (int i = 0; i < 2; i++) {
+        if (reprojBindGroups_[i]) {
+            wgpuBindGroupRelease(reprojBindGroups_[i]);
+            reprojBindGroups_[i] = nullptr;
+        }
+    }
+    if (reprojPipeline_) {
+        wgpuRenderPipelineRelease(reprojPipeline_);
+        reprojPipeline_ = nullptr;
+    }
+    if (reprojBindGroupLayout_) {
+        wgpuBindGroupLayoutRelease(reprojBindGroupLayout_);
+        reprojBindGroupLayout_ = nullptr;
+    }
+    if (reprojSampler_) {
+        wgpuSamplerRelease(reprojSampler_);
+        reprojSampler_ = nullptr;
+    }
+    for (int i = 0; i < 2; i++) {
+        if (trailTextureViews_[i]) {
+            wgpuTextureViewRelease(trailTextureViews_[i]);
+            trailTextureViews_[i] = nullptr;
+        }
+        if (trailTextures_[i]) {
+            wgpuTextureRelease(trailTextures_[i]);
+            trailTextures_[i] = nullptr;
+        }
+    }
+    hasPrevViewProj_ = false;
     if (depthTextureView_) {
         wgpuTextureViewRelease(depthTextureView_);
         depthTextureView_ = nullptr;

@@ -1,0 +1,6 @@
+backend,force_method,integrator,n,steps,total_ms,avg_step_ms,std_step_ms,bodies_per_sec
+Metal,Barnes-Hut,Leapfrog,1000,100,206.518,2.065,0.823,484219
+Metal,Barnes-Hut,Leapfrog,5000,100,797.365,7.974,1.305,627066
+Metal,Barnes-Hut,Leapfrog,10000,100,1666.782,16.668,0.296,599958
+Metal,Barnes-Hut,Leapfrog,50000,100,7525.163,75.252,1.010,664437
+Metal,Barnes-Hut,Leapfrog,100000,100,2086.781,20.868,0.552,4792070

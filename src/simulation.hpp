@@ -3,7 +3,6 @@
 #include "config.hpp"
 #include "exporter.hpp"
 #include "gpu_tree_builder.hpp"
-#include "octree.hpp"
 #include "wgpu_utils.hpp"
 #include <glm/glm.hpp>
 #include <vector>
@@ -22,16 +21,15 @@ public:
     WGPUBuffer getColorBuffer() const { return colors_.get(); }
     int getParticleCount() const { return numParticles_; }
     int getNodeCount() const {
-        if (treeMethod_ == TreeMethod::GPU)
-            return gpuTreeBuilder_.getNodeCount(numParticles_);
-        return static_cast<int>(octree_.nodeCount());
+        return gpuTreeBuilder_.getNodeCount(numParticles_);
     }
-    Integrator getIntegrator() const { return integrator_; }
     Scenario getScenario() const { return scenario_; }
-    TreeMethod getTreeMethod() const { return treeMethod_; }
     ForceMethod getForceMethod() const { return forceMethod_; }
 
     const StepTiming &getLastTiming() const { return lastTiming_; }
+    const TreePassTiming &getLastPassTiming() const { return lastPassTiming_; }
+    void setSyncTiming(bool v) { syncTiming_ = v; }
+    void setBenchmarkPasses(bool v) { benchmarkPasses_ = v; }
     void debugDumpTree(WGPUDevice device, WGPUQueue queue);
 
 private:
@@ -40,53 +38,39 @@ private:
     void initPlummerSphere(const Config &config);
     void initRotatingDisk(const Config &config);
     void createComputePipelines(WGPUDevice device);
-    void computeInitialForces(WGPUQueue queue, float softening, float theta);
-    void cpuBarnesHut(float softening, float theta);
+    void computeInitialForces(WGPUDevice device, WGPUQueue queue,
+                              float softening, float theta);
 
-    void stepLeapfrog(WGPUDevice device, WGPUQueue queue, float dt,
-                      float softening, float theta);
-    void stepEuler(WGPUDevice device, WGPUQueue queue, float dt,
-                   float softening, float theta);
     void stepWithDirectForce(WGPUDevice device, WGPUQueue queue, float dt,
                              float softening, float theta);
     void stepLeapfrogGpuTree(WGPUDevice device, WGPUQueue queue, float dt,
                              float softening, float theta);
 
     int numParticles_ = 0;
-    Integrator integrator_ = Integrator::Leapfrog;
     Scenario scenario_ = Scenario::RotatingDisk;
-    TreeMethod treeMethod_ = TreeMethod::GPU;
     ForceMethod forceMethod_ = ForceMethod::Tree;
 
     wgpu_utils::Buffer positions_;
     wgpu_utils::Buffer velocities_;
     wgpu_utils::Buffer colors_;
     wgpu_utils::Buffer accelerations_;
-    wgpu_utils::Buffer octreeBuffer_;
     wgpu_utils::Buffer paramsBuffer_;
 
     std::vector<glm::vec4> cpuPositions_;
     std::vector<glm::vec4> cpuVelocities_;
     std::vector<glm::vec4> cpuColors_;
-    std::vector<glm::vec4> cpuAccelerations_;
 
-    Octree octree_;
     GpuTreeBuilder gpuTreeBuilder_;
     StepTiming lastTiming_;
+    TreePassTiming lastPassTiming_;
+    bool syncTiming_ = false;
+    bool benchmarkPasses_ = false;
 
-    // CPU octree force pipeline
-    WGPUComputePipeline forcePipeline_ = nullptr;
-    WGPUBindGroupLayout forceBindGroupLayout_ = nullptr;
-
-    // Kick/drift pipelines (shared)
+    // Kick/drift pipelines
     WGPUComputePipeline kickPipeline_ = nullptr;
     WGPUComputePipeline driftPipeline_ = nullptr;
     WGPUBindGroupLayout kickBindGroupLayout_ = nullptr;
     WGPUBindGroupLayout driftBindGroupLayout_ = nullptr;
-
-    // Euler fallback
-    WGPUComputePipeline integratePipeline_ = nullptr;
-    WGPUBindGroupLayout integrateBindGroupLayout_ = nullptr;
 
     // Direct summation O(N²)
     WGPUComputePipeline directForcePipeline_ = nullptr;

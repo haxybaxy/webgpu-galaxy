@@ -13,22 +13,6 @@ const char *scenarioName(Scenario s) {
     return "Unknown";
 }
 
-const char *integratorName(Integrator i) {
-    switch (i) {
-    case Integrator::Euler: return "Euler";
-    case Integrator::Leapfrog: return "Leapfrog (KDK)";
-    }
-    return "Unknown";
-}
-
-const char *treeMethodName(TreeMethod t) {
-    switch (t) {
-    case TreeMethod::CPU: return "CPU Octree";
-    case TreeMethod::GPU: return "GPU BVH (LBVH)";
-    }
-    return "Unknown";
-}
-
 const char *forceMethodName(ForceMethod f) {
     switch (f) {
     case ForceMethod::Tree: return "Tree (Barnes-Hut)";
@@ -55,11 +39,6 @@ Config parseArgs(int argc, char **argv) {
             else if (val == "plummer") cfg.scenario = Scenario::PlummerSphere;
             else if (val == "disk") cfg.scenario = Scenario::RotatingDisk;
             else spdlog::warn("Unknown scenario '{}', using default", val);
-        } else if (arg == "--integrator") {
-            std::string val = nextVal();
-            if (val == "euler") cfg.integrator = Integrator::Euler;
-            else if (val == "leapfrog") cfg.integrator = Integrator::Leapfrog;
-            else spdlog::warn("Unknown integrator '{}', using default", val);
         } else if (arg == "--N") {
             cfg.numParticles = std::stoi(nextVal());
         } else if (arg == "--dt") {
@@ -74,11 +53,6 @@ Config parseArgs(int argc, char **argv) {
             cfg.maxSteps = std::stoi(nextVal());
         } else if (arg == "--export") {
             cfg.exportPath = nextVal();
-        } else if (arg == "--tree") {
-            std::string val = nextVal();
-            if (val == "cpu") cfg.treeMethod = TreeMethod::CPU;
-            else if (val == "gpu") cfg.treeMethod = TreeMethod::GPU;
-            else spdlog::warn("Unknown tree method '{}', using default", val);
         } else if (arg == "--force-method") {
             std::string val = nextVal();
             if (val == "tree") cfg.forceMethod = ForceMethod::Tree;
@@ -94,6 +68,11 @@ Config parseArgs(int argc, char **argv) {
             std::sort(cfg.screenshotTimes.begin(), cfg.screenshotTimes.end());
         } else if (arg == "--headless") {
             cfg.headless = true;
+        } else if (arg == "--sync-timing") {
+            cfg.syncTiming = true;
+        } else if (arg == "--benchmark-passes") {
+            cfg.benchmarkPasses = true;
+            cfg.syncTiming = true; // implies sync
         } else if (arg == "--verbose") {
             // handled separately in main
         } else {

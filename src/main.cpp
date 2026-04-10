@@ -47,6 +47,7 @@ class Application {
     float currentFPS_ = 0.0f;
     int lastParticleCount_ = 0;
     int stepCount_ = 0;
+    bool stepLimitReached_ = false;
     double simTime_ = 0.0;
     int diagInterval_ = 60;
     Diagnostics lastDiag_{};
@@ -69,6 +70,8 @@ public:
         renderer_.initialize(device_, surfaceFormat_, fbw, fbh);
 
         simulation_.initialize(device_, queue_, config_);
+        simulation_.setSyncTiming(config_.syncTiming);
+        simulation_.setBenchmarkPasses(config_.benchmarkPasses);
         lastParticleCount_ = config_.numParticles;
 
         // Initialize GUI with config values
@@ -80,8 +83,6 @@ public:
 
         gui_.initialize(device_, surfaceFormat_, window_);
         gui_.setScenarioName(scenarioName(config_.scenario));
-        gui_.setIntegratorName(integratorName(config_.integrator));
-        gui_.setTreeMethodName(treeMethodName(config_.treeMethod));
         gui_.setForceMethodName(forceMethodName(config_.forceMethod));
 
         camera_.setDistance(80.0f);
@@ -227,6 +228,28 @@ public:
             if (exporter_.isOpen()) {
                 exporter_.writeRow(stepCount_, simTime_, lastDiag_, timing);
             }
+
+#ifdef __EMSCRIPTEN__
+            // Log CSV to browser console for benchmark runs
+            if (config_.maxSteps > 0) {
+                if (stepCount_ == 1) {
+                    if (timing.hasPassBreakdown) {
+                        spdlog::info("CSV:step,time,tree_build_ms,force_ms,integrate_ms,bbox_ms,morton_ms,radix_sort_ms,karras_ms,leaf_init_ms,aggregate_ms");
+                    } else {
+                        spdlog::info("CSV:step,time,tree_build_ms,force_ms,integrate_ms");
+                    }
+                }
+                if (timing.hasPassBreakdown) {
+                    spdlog::info("CSV:{},{:.6f},{:.3f},{:.3f},{:.3f},{:.3f},{:.3f},{:.3f},{:.3f},{:.3f},{:.3f}",
+                        stepCount_, simTime_, timing.treeBuildMs, timing.forceMs, timing.integrateMs,
+                        timing.bboxReduceMs, timing.mortonMs, timing.radixSortMs,
+                        timing.karrasMs, timing.leafInitMs, timing.aggregateMs);
+                } else {
+                    spdlog::info("CSV:{},{:.6f},{:.3f},{:.3f},{:.3f}",
+                        stepCount_, simTime_, timing.treeBuildMs, timing.forceMs, timing.integrateMs);
+                }
+            }
+#endif
         }
 
         // FPS counter
@@ -256,7 +279,9 @@ public:
                          simulation_.getColorBuffer(),
                          simulation_.getParticleCount(),
                          camera_.getViewMatrix(),
-                         camera_.getProjectionMatrix(aspect));
+                         camera_.getProjectionMatrix(aspect),
+                         params.showTrails, params.trailLength,
+                         surfaceTexture.texture);
 
         gui_.render(targetView);
 
@@ -281,11 +306,12 @@ public:
 #endif
 
         // Check step limit for interactive mode
-        if (config_.maxSteps > 0 && stepCount_ >= config_.maxSteps) {
+        if (config_.maxSteps > 0 && stepCount_ >= config_.maxSteps && !stepLimitReached_) {
             spdlog::info("Reached step limit ({})", config_.maxSteps);
+            stepLimitReached_ = true;
+            params.paused = true;
+#ifndef __EMSCRIPTEN__
             running_ = false;
-#ifdef __EMSCRIPTEN__
-            emscripten_cancel_main_loop();
 #endif
         }
     }
@@ -317,16 +343,17 @@ public:
 // ============================================================
 
 static void runHeadless(const Config &config) {
-    spdlog::info("Running headless: {} steps, {} particles, {}, {}",
+    spdlog::info("Running headless: {} steps, {} particles, {}",
                  config.maxSteps, config.numParticles,
-                 scenarioName(config.scenario),
-                 integratorName(config.integrator));
+                 scenarioName(config.scenario));
 
     auto [instance, device, adapter] = initializeWebGPU();
     WGPUQueue queue = wgpuDeviceGetQueue(device);
 
     Simulation simulation;
     simulation.initialize(device, queue, config);
+    simulation.setSyncTiming(config.syncTiming);
+    simulation.setBenchmarkPasses(config.benchmarkPasses);
 
     // Screenshot support in headless mode
     bool hasScreenshots = !config.screenshotTimes.empty();
@@ -353,7 +380,7 @@ static void runHeadless(const Config &config) {
     DiagnosticsCalculator diagnostics;
     Exporter exporter;
     if (!config.exportPath.empty()) {
-        if (!exporter.open(config.exportPath)) {
+        if (!exporter.open(config.exportPath, config.benchmarkPasses)) {
             spdlog::error("Failed to open export file: {}", config.exportPath);
         }
     }
@@ -466,11 +493,9 @@ int main(int argc, char **argv) {
 
     Config config = parseArgs(argc, argv);
 
-    spdlog::info("Config: scenario={}, integrator={}, tree={}, force={}, N={}, "
+    spdlog::info("Config: scenario={}, force={}, N={}, "
                  "dt={}, softening={}, theta={}, seed={}",
                  scenarioName(config.scenario),
-                 integratorName(config.integrator),
-                 treeMethodName(config.treeMethod),
                  forceMethodName(config.forceMethod),
                  config.numParticles,
                  config.dt, config.softening, config.theta, config.seed);

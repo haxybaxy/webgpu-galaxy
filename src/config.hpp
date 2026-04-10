@@ -5,14 +5,10 @@
 #include <vector>
 
 enum class Scenario { TwoBody, PlummerSphere, RotatingDisk };
-enum class Integrator { Euler, Leapfrog };
-enum class TreeMethod { CPU, GPU };
 enum class ForceMethod { Tree, Direct };
 
 struct Config {
     Scenario scenario = Scenario::RotatingDisk;
-    Integrator integrator = Integrator::Leapfrog;
-    TreeMethod treeMethod = TreeMethod::GPU;
     ForceMethod forceMethod = ForceMethod::Tree;
     int numParticles = 10000;
     float dt = 0.001f;
@@ -22,11 +18,11 @@ struct Config {
     int maxSteps = 0;          // 0 = interactive (no limit)
     std::string exportPath;    // empty = no export
     bool headless = false;     // run without window (batch mode)
+    bool syncTiming = false;   // flush GPU before recording timestamps
+    bool benchmarkPasses = false; // per-pass LBVH timing via separate submissions
     std::vector<double> screenshotTimes; // times at which to capture screenshots
 };
 
 Config parseArgs(int argc, char **argv);
 const char *scenarioName(Scenario s);
-const char *integratorName(Integrator i);
-const char *treeMethodName(TreeMethod t);
 const char *forceMethodName(ForceMethod f);

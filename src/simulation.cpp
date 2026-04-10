@@ -11,95 +11,6 @@ static constexpr float PI = 3.14159265358979323846f;
 // WGSL Shader Sources
 // ============================================================
 
-static const char *kForceShaderSource = R"(
-struct Params {
-    dt: f32,
-    softening: f32,
-    theta: f32,
-    numParticles: u32,
-    nodeCount: u32,
-    paddedN: u32,
-}
-
-struct Node {
-    centerOfMass: vec4f,
-    bounds: vec4f,
-    c0: i32, c1: i32, c2: i32, c3: i32,
-    c4: i32, c5: i32, c6: i32, c7: i32,
-}
-
-fn getChild(node: Node, idx: i32) -> i32 {
-    switch(idx) {
-        case 0: { return node.c0; }
-        case 1: { return node.c1; }
-        case 2: { return node.c2; }
-        case 3: { return node.c3; }
-        case 4: { return node.c4; }
-        case 5: { return node.c5; }
-        case 6: { return node.c6; }
-        case 7: { return node.c7; }
-        default: { return -1; }
-    }
-}
-
-@group(0) @binding(0) var<uniform> params: Params;
-@group(0) @binding(1) var<storage, read> positions: array<vec4f>;
-@group(0) @binding(2) var<storage, read> nodes: array<Node>;
-@group(0) @binding(3) var<storage, read_write> accelerations: array<vec4f>;
-
-const G: f32 = 1.0;
-
-@compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) gid: vec3u) {
-    let i = gid.x;
-    if (i >= params.numParticles) { return; }
-
-    let pos = positions[i].xyz;
-    var acc = vec3f(0.0);
-
-    var stack: array<i32, 64>;
-    stack[0] = 0;
-    var top: i32 = 1;
-
-    let thetaSq = params.theta * params.theta;
-    let softSq = params.softening * params.softening;
-
-    while (top > 0) {
-        top = top - 1;
-        let nodeIdx = stack[top];
-        if (nodeIdx < 0 || u32(nodeIdx) >= params.nodeCount) { continue; }
-
-        let node = nodes[nodeIdx];
-        let diff = node.centerOfMass.xyz - pos;
-        let distSq = dot(diff, diff) + softSq;
-        let halfWidth = node.bounds.w;
-        let mass = node.centerOfMass.w;
-
-        let hasChildren = (node.c0 >= 0) || (node.c1 >= 0) || (node.c2 >= 0) || (node.c3 >= 0)
-                       || (node.c4 >= 0) || (node.c5 >= 0) || (node.c6 >= 0) || (node.c7 >= 0);
-
-        if (!hasChildren || (halfWidth * halfWidth / distSq < thetaSq)) {
-            if (mass > 0.0 && distSq > softSq * 0.01) {
-                let invDist = inverseSqrt(distSq);
-                let invDist3 = invDist * invDist * invDist;
-                acc += G * mass * diff * invDist3;
-            }
-        } else {
-            if (node.c0 >= 0 && top < 64) { stack[top] = node.c0; top = top + 1; }
-            if (node.c1 >= 0 && top < 64) { stack[top] = node.c1; top = top + 1; }
-            if (node.c2 >= 0 && top < 64) { stack[top] = node.c2; top = top + 1; }
-            if (node.c3 >= 0 && top < 64) { stack[top] = node.c3; top = top + 1; }
-            if (node.c4 >= 0 && top < 64) { stack[top] = node.c4; top = top + 1; }
-            if (node.c5 >= 0 && top < 64) { stack[top] = node.c5; top = top + 1; }
-            if (node.c6 >= 0 && top < 64) { stack[top] = node.c6; top = top + 1; }
-            if (node.c7 >= 0 && top < 64) { stack[top] = node.c7; top = top + 1; }
-        }
-    }
-
-    accelerations[i] = vec4f(acc, 0.0);
-}
-)";
-
 // Kick shader: v += a * dt/2
 static const char *kKickShaderSource = R"(
 struct Params {
@@ -152,40 +63,6 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let mass = pos.w;
     pos = vec4f(pos.xyz + vel * params.dt, mass);
     positions[i] = pos;
-}
-)";
-
-// Euler integrate shader (fallback)
-static const char *kIntegrateShaderSource = R"(
-struct Params {
-    dt: f32,
-    softening: f32,
-    theta: f32,
-    numParticles: u32,
-    nodeCount: u32,
-    paddedN: u32,
-}
-
-@group(0) @binding(0) var<uniform> params: Params;
-@group(0) @binding(1) var<storage, read_write> positions: array<vec4f>;
-@group(0) @binding(2) var<storage, read_write> velocities: array<vec4f>;
-@group(0) @binding(3) var<storage, read> accelerations: array<vec4f>;
-
-@compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3u) {
-    let i = gid.x;
-    if (i >= params.numParticles) { return; }
-
-    let acc = accelerations[i].xyz;
-    var vel = velocities[i].xyz;
-    var pos = positions[i].xyz;
-    let mass = positions[i].w;
-
-    vel += acc * params.dt;
-    pos += vel * params.dt;
-
-    velocities[i] = vec4f(vel, 0.0);
-    positions[i] = vec4f(pos, mass);
 }
 )";
 
@@ -319,7 +196,6 @@ void Simulation::initParticles(const Config &config) {
     cpuPositions_.resize(numParticles_);
     cpuVelocities_.resize(numParticles_);
     cpuColors_.resize(numParticles_);
-    cpuAccelerations_.resize(numParticles_, glm::vec4(0.0f));
 
     switch (config.scenario) {
     case Scenario::TwoBody:
@@ -460,88 +336,72 @@ void Simulation::initRotatingDisk(const Config &config) {
 }
 
 // ============================================================
-// CPU Barnes-Hut Force Computation (mirror)
+// Compute Initial Forces (for leapfrog bootstrap, GPU dispatch)
 // ============================================================
 
-void Simulation::cpuBarnesHut(float softening, float theta) {
-    const auto &octreeNodes = octree_.getNodes();
-    size_t nodeCount = octree_.nodeCount();
-    float thetaSq = theta * theta;
-    float softSq = softening * softening;
+void Simulation::computeInitialForces(WGPUDevice device, WGPUQueue queue,
+                                      float softening, float theta) {
+    uint32_t N = static_cast<uint32_t>(numParticles_);
 
-    for (int i = 0; i < numParticles_; i++) {
-        glm::vec3 pos(cpuPositions_[i]);
-        glm::vec3 acc(0.0f);
+    if (forceMethod_ == ForceMethod::Direct) {
+        // Direct O(N²) force pass
+        struct alignas(16) Params {
+            float dt; float softening; float theta;
+            uint32_t numParticles; uint32_t nodeCount; uint32_t paddedN;
+            float _pad[2];
+        } params{0.0f, softening, theta, N, 0, 0, {0.0f, 0.0f}};
+        paramsBuffer_.upload(queue, &params, sizeof(params));
 
-        int stack[64];
-        stack[0] = 0;
-        int top = 1;
+        WGPUBindGroupEntry directBE[3] = {};
+        directBE[0].binding = 0; directBE[0].buffer = paramsBuffer_.get(); directBE[0].size = sizeof(params);
+        directBE[1].binding = 1; directBE[1].buffer = positions_.get(); directBE[1].size = N * sizeof(glm::vec4);
+        directBE[2].binding = 2; directBE[2].buffer = accelerations_.get(); directBE[2].size = N * sizeof(glm::vec4);
 
-        while (top > 0) {
-            top--;
-            int nodeIdx = stack[top];
-            if (nodeIdx < 0 || static_cast<size_t>(nodeIdx) >= nodeCount)
-                continue;
+        WGPUBindGroupDescriptor bgd{}; bgd.layout = directForceBindGroupLayout_; bgd.entryCount = 3; bgd.entries = directBE;
+        WGPUBindGroup bg = wgpuDeviceCreateBindGroup(device, &bgd);
 
-            const OctreeNode &node = octreeNodes[nodeIdx];
-            glm::vec3 diff(node.centerOfMass.x - pos.x,
-                           node.centerOfMass.y - pos.y,
-                           node.centerOfMass.z - pos.z);
-            float distSq = glm::dot(diff, diff) + softSq;
-            float halfWidth = node.bounds.w;
-            float mass = node.centerOfMass.w;
+        WGPUCommandEncoder encoder = wgpu_utils::createCommandEncoder(device);
+        WGPUComputePassDescriptor passDesc{}; passDesc.timestampWrites = nullptr;
+        WGPUComputePassEncoder pass = wgpuCommandEncoderBeginComputePass(encoder, &passDesc);
+        wgpuComputePassEncoderSetPipeline(pass, directForcePipeline_);
+        wgpuComputePassEncoderSetBindGroup(pass, 0, bg, 0, nullptr);
+        wgpuComputePassEncoderDispatchWorkgroups(pass, (N + 63) / 64, 1, 1);
+        wgpuComputePassEncoderEnd(pass);
+        wgpuComputePassEncoderRelease(pass);
+        wgpu_utils::finishCommandEncoder(queue, encoder);
+        wgpuBindGroupRelease(bg);
 
-            bool isLeaf = true;
-            for (int c = 0; c < 8; c++) {
-                if (node.children[c] >= 0) {
-                    isLeaf = false;
-                    break;
-                }
-            }
+        spdlog::info("Initial forces computed (direct O(N^2))");
+    } else {
+        // BVH tree force pass
+        uint32_t paddedN = gpuTreeBuilder_.getPaddedN(N);
+        uint32_t nodeCount = 2 * N - 1;
 
-            if (isLeaf || (halfWidth * halfWidth / distSq < thetaSq)) {
-                if (mass > 0.0f && distSq > softSq * 0.01f) {
-                    float invDist = 1.0f / std::sqrt(distSq);
-                    float invDist3 = invDist * invDist * invDist;
-                    acc += mass * diff * invDist3;
-                }
-            } else {
-                for (int c = 0; c < 8; c++) {
-                    if (node.children[c] >= 0 && top < 64) {
-                        stack[top] = node.children[c];
-                        top++;
-                    }
-                }
-            }
-        }
+        struct alignas(16) Params {
+            float dt; float softening; float theta;
+            uint32_t numParticles; uint32_t nodeCount; uint32_t paddedN;
+            float _pad[2];
+        } params{0.0f, softening, theta, N, nodeCount, paddedN, {0.0f, 0.0f}};
+        paramsBuffer_.upload(queue, &params, sizeof(params));
 
-        cpuAccelerations_[i] = glm::vec4(acc, 0.0f);
+        gpuTreeBuilder_.prepareUploads(queue, N);
+        ensureBindGroupsCached(device);
+
+        WGPUCommandEncoder encoder = wgpu_utils::createCommandEncoder(device);
+        gpuTreeBuilder_.recordTreeBuild(device, encoder,
+                                         positions_.get(), paramsBuffer_.get(), N);
+
+        WGPUComputePassDescriptor passDesc{}; passDesc.timestampWrites = nullptr;
+        WGPUComputePassEncoder forcePass = wgpuCommandEncoderBeginComputePass(encoder, &passDesc);
+        wgpuComputePassEncoderSetPipeline(forcePass, bvhForcePipeline_);
+        wgpuComputePassEncoderSetBindGroup(forcePass, 0, cachedBvhForceBG_, 0, nullptr);
+        wgpuComputePassEncoderDispatchWorkgroups(forcePass, (N + 63) / 64, 1, 1);
+        wgpuComputePassEncoderEnd(forcePass);
+        wgpuComputePassEncoderRelease(forcePass);
+        wgpu_utils::finishCommandEncoder(queue, encoder);
+
+        spdlog::info("Initial forces computed ({} BVH nodes)", nodeCount);
     }
-}
-
-// ============================================================
-// Compute Initial Forces (for leapfrog bootstrap)
-// ============================================================
-
-void Simulation::computeInitialForces(WGPUQueue queue, float softening,
-                                      float theta) {
-    octree_.build(cpuPositions_);
-    size_t nodeCount = octree_.nodeCount();
-    if (nodeCount == 0) return;
-
-    // Upload octree for GPU (used on first step)
-    auto &nodes = octree_.getNodes();
-    octreeBuffer_.upload(queue, (void *)nodes.data(),
-                         nodeCount * sizeof(OctreeNode));
-
-    // CPU force computation
-    cpuBarnesHut(softening, theta);
-
-    // Upload CPU-computed accelerations to GPU so both start synchronized
-    accelerations_.upload(queue, cpuAccelerations_.data(),
-                          numParticles_ * sizeof(glm::vec4));
-
-    spdlog::info("Initial forces computed ({} octree nodes)", nodeCount);
 }
 
 // ============================================================
@@ -550,51 +410,6 @@ void Simulation::computeInitialForces(WGPUQueue queue, float softening,
 
 void Simulation::createComputePipelines(WGPUDevice device) {
     if (pipelinesCreated_) return;
-
-    // --- Force pipeline (unchanged) ---
-    WGPUBindGroupLayoutEntry forceEntries[4] = {};
-    forceEntries[0].binding = 0;
-    forceEntries[0].visibility = WGPUShaderStage_Compute;
-    forceEntries[0].buffer.type = WGPUBufferBindingType_Uniform;
-    forceEntries[0].buffer.minBindingSize = 0;
-    forceEntries[1].binding = 1;
-    forceEntries[1].visibility = WGPUShaderStage_Compute;
-    forceEntries[1].buffer.type = WGPUBufferBindingType_ReadOnlyStorage;
-    forceEntries[1].buffer.minBindingSize = 0;
-    forceEntries[2].binding = 2;
-    forceEntries[2].visibility = WGPUShaderStage_Compute;
-    forceEntries[2].buffer.type = WGPUBufferBindingType_ReadOnlyStorage;
-    forceEntries[2].buffer.minBindingSize = 0;
-    forceEntries[3].binding = 3;
-    forceEntries[3].visibility = WGPUShaderStage_Compute;
-    forceEntries[3].buffer.type = WGPUBufferBindingType_Storage;
-    forceEntries[3].buffer.minBindingSize = 0;
-
-    WGPUBindGroupLayoutDescriptor forceLayoutDesc{};
-    forceLayoutDesc.entryCount = 4;
-    forceLayoutDesc.entries = forceEntries;
-    forceBindGroupLayout_ =
-        wgpuDeviceCreateBindGroupLayout(device, &forceLayoutDesc);
-
-    WGPUPipelineLayoutDescriptor forcePLDesc{};
-    forcePLDesc.bindGroupLayoutCount = 1;
-    forcePLDesc.bindGroupLayouts = &forceBindGroupLayout_;
-    WGPUPipelineLayout forcePL =
-        wgpuDeviceCreatePipelineLayout(device, &forcePLDesc);
-
-    WGPUShaderModule forceShader =
-        wgpu_utils::createShaderModule(device, kForceShaderSource);
-    WGPUComputePipelineDescriptor forcePipeDesc{};
-    forcePipeDesc.layout = forcePL;
-    forcePipeDesc.compute.module = forceShader;
-    forcePipeDesc.compute.entryPoint = "main";
-    forcePipeline_ = wgpuDeviceCreateComputePipeline(device, &forcePipeDesc);
-    if (!forcePipeline_)
-        spdlog::error("Failed to create force compute pipeline!");
-    else
-        spdlog::info("Force compute pipeline created");
-    wgpuShaderModuleRelease(forceShader);
-    wgpuPipelineLayoutRelease(forcePL);
 
     // --- Kick pipeline: params(uniform), velocities(rw), accelerations(ro) ---
     WGPUBindGroupLayoutEntry kickEntries[3] = {};
@@ -677,52 +492,6 @@ void Simulation::createComputePipelines(WGPUDevice device) {
         spdlog::info("Drift compute pipeline created");
     wgpuShaderModuleRelease(driftShader);
     wgpuPipelineLayoutRelease(driftPL);
-
-    // --- Euler integrate pipeline (fallback, unchanged layout) ---
-    WGPUBindGroupLayoutEntry intEntries[4] = {};
-    intEntries[0].binding = 0;
-    intEntries[0].visibility = WGPUShaderStage_Compute;
-    intEntries[0].buffer.type = WGPUBufferBindingType_Uniform;
-    intEntries[0].buffer.minBindingSize = 0;
-    intEntries[1].binding = 1;
-    intEntries[1].visibility = WGPUShaderStage_Compute;
-    intEntries[1].buffer.type = WGPUBufferBindingType_Storage;
-    intEntries[1].buffer.minBindingSize = 0;
-    intEntries[2].binding = 2;
-    intEntries[2].visibility = WGPUShaderStage_Compute;
-    intEntries[2].buffer.type = WGPUBufferBindingType_Storage;
-    intEntries[2].buffer.minBindingSize = 0;
-    intEntries[3].binding = 3;
-    intEntries[3].visibility = WGPUShaderStage_Compute;
-    intEntries[3].buffer.type = WGPUBufferBindingType_ReadOnlyStorage;
-    intEntries[3].buffer.minBindingSize = 0;
-
-    WGPUBindGroupLayoutDescriptor intLayoutDesc{};
-    intLayoutDesc.entryCount = 4;
-    intLayoutDesc.entries = intEntries;
-    integrateBindGroupLayout_ =
-        wgpuDeviceCreateBindGroupLayout(device, &intLayoutDesc);
-
-    WGPUPipelineLayoutDescriptor intPLDesc{};
-    intPLDesc.bindGroupLayoutCount = 1;
-    intPLDesc.bindGroupLayouts = &integrateBindGroupLayout_;
-    WGPUPipelineLayout intPL =
-        wgpuDeviceCreatePipelineLayout(device, &intPLDesc);
-
-    WGPUShaderModule intShader =
-        wgpu_utils::createShaderModule(device, kIntegrateShaderSource);
-    WGPUComputePipelineDescriptor intPipeDesc{};
-    intPipeDesc.layout = intPL;
-    intPipeDesc.compute.module = intShader;
-    intPipeDesc.compute.entryPoint = "main";
-    integratePipeline_ =
-        wgpuDeviceCreateComputePipeline(device, &intPipeDesc);
-    if (!integratePipeline_)
-        spdlog::error("Failed to create integrate compute pipeline!");
-    else
-        spdlog::info("Integrate compute pipeline created (Euler fallback)");
-    wgpuShaderModuleRelease(intShader);
-    wgpuPipelineLayoutRelease(intPL);
 
     // --- Direct force pipeline: params(uniform), positions(ro), accelerations(rw) ---
     WGPUBindGroupLayoutEntry directEntries[3] = {};
@@ -822,9 +591,7 @@ void Simulation::createComputePipelines(WGPUDevice device) {
 void Simulation::initialize(WGPUDevice device, WGPUQueue queue,
                             const Config &config) {
     numParticles_ = config.numParticles;
-    integrator_ = config.integrator;
     scenario_ = config.scenario;
-    treeMethod_ = config.treeMethod;
     forceMethod_ = config.forceMethod;
     initParticles(config);
 
@@ -850,36 +617,25 @@ void Simulation::initialize(WGPUDevice device, WGPUQueue queue,
     colors_.upload(queue, cpuColors_.data(),
                    numParticles_ * sizeof(glm::vec4));
 
-    octreeBuffer_.initialize(
-        device, WGPUBufferUsage_Storage | WGPUBufferUsage_CopyDst,
-        sizeof(OctreeNode) * 8);
-
     paramsBuffer_.initialize(
         device, WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst, 32);
 
     createComputePipelines(device);
 
-    // Initialize GPU tree builder if using GPU tree method
-    if (treeMethod_ == TreeMethod::GPU) {
-        gpuTreeBuilder_.initialize(device, 100000u);  // GUI max — buffers sized for worst case
-    }
+    gpuTreeBuilder_.initialize(device, 100000u);
 
     // Compute initial accelerations (required for leapfrog bootstrap)
-    computeInitialForces(queue, config.softening, config.theta);
+    computeInitialForces(device, queue, config.softening, config.theta);
 
-    spdlog::info("Simulation initialized: {} particles, {}, {}, {}, {}",
+    spdlog::info("Simulation initialized: {} particles, {}, {}",
                  numParticles_, scenarioName(scenario_),
-                 integratorName(integrator_),
-                 treeMethodName(treeMethod_),
                  forceMethodName(forceMethod_));
 }
 
 void Simulation::reinitialize(WGPUDevice device, WGPUQueue queue,
                               const Config &config) {
     numParticles_ = config.numParticles;
-    integrator_ = config.integrator;
     scenario_ = config.scenario;
-    treeMethod_ = config.treeMethod;
     forceMethod_ = config.forceMethod;
     initParticles(config);
 
@@ -891,7 +647,7 @@ void Simulation::reinitialize(WGPUDevice device, WGPUQueue queue,
                    numParticles_ * sizeof(glm::vec4));
 
     invalidateBindGroups();
-    computeInitialForces(queue, config.softening, config.theta);
+    computeInitialForces(device, queue, config.softening, config.theta);
 }
 
 void Simulation::invalidateBindGroups() {
@@ -949,7 +705,6 @@ void Simulation::ensureBindGroupsCached(WGPUDevice device) {
 }
 
 void Simulation::debugDumpTree(WGPUDevice device, WGPUQueue queue) {
-    if (treeMethod_ != TreeMethod::GPU) return;
     uint32_t N = static_cast<uint32_t>(numParticles_);
     uint32_t nc = 2 * N - 1;
     size_t treeSz = nc * sizeof(BVHNodeGPU);
@@ -1042,353 +797,9 @@ void Simulation::step(WGPUDevice device, WGPUQueue queue, float dt,
                       float softening, float theta) {
     if (forceMethod_ == ForceMethod::Direct) {
         stepWithDirectForce(device, queue, dt, softening, theta);
-    } else if (treeMethod_ == TreeMethod::GPU && integrator_ == Integrator::Leapfrog) {
-        stepLeapfrogGpuTree(device, queue, dt, softening, theta);
-    } else if (integrator_ == Integrator::Leapfrog) {
-        stepLeapfrog(device, queue, dt, softening, theta);
     } else {
-        stepEuler(device, queue, dt, softening, theta);
+        stepLeapfrogGpuTree(device, queue, dt, softening, theta);
     }
-}
-
-// ============================================================
-// KDK Leapfrog Step
-// ============================================================
-
-void Simulation::stepLeapfrog(WGPUDevice device, WGPUQueue queue, float dt,
-                              float softening, float theta) {
-    using Clock = std::chrono::high_resolution_clock;
-    auto t0 = Clock::now();
-
-    // --- Upload params (nodeCount=0, unused by kick/drift) ---
-    struct alignas(16) Params {
-        float dt;
-        float softening;
-        float theta;
-        uint32_t numParticles;
-        uint32_t nodeCount;
-        uint32_t paddedN;
-        float _pad[2];
-    } params;
-    params.dt = dt;
-    params.softening = softening;
-    params.theta = theta;
-    params.numParticles = static_cast<uint32_t>(numParticles_);
-    params.nodeCount = 0;
-    params.paddedN = 0;
-    params._pad[0] = params._pad[1] = 0.0f;
-    paramsBuffer_.upload(queue, &params, sizeof(params));
-
-    // --- Phase 1: Half-kick + Drift (GPU only) ---
-    {
-        // Create kick bind group
-        WGPUBindGroupEntry kickBE[3] = {};
-        kickBE[0].binding = 0;
-        kickBE[0].buffer = paramsBuffer_.get();
-        kickBE[0].offset = 0;
-        kickBE[0].size = sizeof(params);
-        kickBE[1].binding = 1;
-        kickBE[1].buffer = velocities_.get();
-        kickBE[1].offset = 0;
-        kickBE[1].size = numParticles_ * sizeof(glm::vec4);
-        kickBE[2].binding = 2;
-        kickBE[2].buffer = accelerations_.get();
-        kickBE[2].offset = 0;
-        kickBE[2].size = numParticles_ * sizeof(glm::vec4);
-
-        WGPUBindGroupDescriptor kickBGD{};
-        kickBGD.layout = kickBindGroupLayout_;
-        kickBGD.entryCount = 3;
-        kickBGD.entries = kickBE;
-        WGPUBindGroup kickBG = wgpuDeviceCreateBindGroup(device, &kickBGD);
-
-        // Create drift bind group
-        WGPUBindGroupEntry driftBE[3] = {};
-        driftBE[0].binding = 0;
-        driftBE[0].buffer = paramsBuffer_.get();
-        driftBE[0].offset = 0;
-        driftBE[0].size = sizeof(params);
-        driftBE[1].binding = 1;
-        driftBE[1].buffer = positions_.get();
-        driftBE[1].offset = 0;
-        driftBE[1].size = numParticles_ * sizeof(glm::vec4);
-        driftBE[2].binding = 2;
-        driftBE[2].buffer = velocities_.get();
-        driftBE[2].offset = 0;
-        driftBE[2].size = numParticles_ * sizeof(glm::vec4);
-
-        WGPUBindGroupDescriptor driftBGD{};
-        driftBGD.layout = driftBindGroupLayout_;
-        driftBGD.entryCount = 3;
-        driftBGD.entries = driftBE;
-        WGPUBindGroup driftBG = wgpuDeviceCreateBindGroup(device, &driftBGD);
-
-        WGPUCommandEncoder encoder = wgpu_utils::createCommandEncoder(device);
-        WGPUComputePassDescriptor passDesc{};
-        passDesc.timestampWrites = nullptr;
-        uint32_t wg = (numParticles_ + 255) / 256;
-
-        // Kick pass
-        WGPUComputePassEncoder kickPass =
-            wgpuCommandEncoderBeginComputePass(encoder, &passDesc);
-        wgpuComputePassEncoderSetPipeline(kickPass, kickPipeline_);
-        wgpuComputePassEncoderSetBindGroup(kickPass, 0, kickBG, 0, nullptr);
-        wgpuComputePassEncoderDispatchWorkgroups(kickPass, wg, 1, 1);
-        wgpuComputePassEncoderEnd(kickPass);
-        wgpuComputePassEncoderRelease(kickPass);
-
-        // Drift pass
-        WGPUComputePassEncoder driftPass =
-            wgpuCommandEncoderBeginComputePass(encoder, &passDesc);
-        wgpuComputePassEncoderSetPipeline(driftPass, driftPipeline_);
-        wgpuComputePassEncoderSetBindGroup(driftPass, 0, driftBG, 0, nullptr);
-        wgpuComputePassEncoderDispatchWorkgroups(driftPass, wg, 1, 1);
-        wgpuComputePassEncoderEnd(driftPass);
-        wgpuComputePassEncoderRelease(driftPass);
-
-        wgpu_utils::finishCommandEncoder(queue, encoder);
-        wgpuBindGroupRelease(kickBG);
-        wgpuBindGroupRelease(driftBG);
-    }
-
-    auto t1 = Clock::now();
-
-    // --- Phase 2: Readback positions from GPU, then build octree on CPU ---
-    readbackState(device, queue, cpuPositions_, cpuVelocities_);
-    octree_.build(cpuPositions_);
-    size_t nodeCount = octree_.nodeCount();
-    if (nodeCount == 0) return;
-
-    auto t2 = Clock::now();
-
-    // --- Phase 3: Force computation ---
-
-    // Upload octree
-    auto &nodes = octree_.getNodes();
-    octreeBuffer_.upload(queue, (void *)nodes.data(),
-                         nodeCount * sizeof(OctreeNode));
-
-    // Re-upload params with correct nodeCount
-    params.nodeCount = static_cast<uint32_t>(nodeCount);
-    paramsBuffer_.upload(queue, &params, sizeof(params));
-
-    // GPU: force + second kick
-    {
-        // Force bind group
-        WGPUBindGroupEntry forceBE[4] = {};
-        forceBE[0].binding = 0;
-        forceBE[0].buffer = paramsBuffer_.get();
-        forceBE[0].offset = 0;
-        forceBE[0].size = sizeof(params);
-        forceBE[1].binding = 1;
-        forceBE[1].buffer = positions_.get();
-        forceBE[1].offset = 0;
-        forceBE[1].size = numParticles_ * sizeof(glm::vec4);
-        forceBE[2].binding = 2;
-        forceBE[2].buffer = octreeBuffer_.get();
-        forceBE[2].offset = 0;
-        forceBE[2].size = nodeCount * sizeof(OctreeNode);
-        forceBE[3].binding = 3;
-        forceBE[3].buffer = accelerations_.get();
-        forceBE[3].offset = 0;
-        forceBE[3].size = numParticles_ * sizeof(glm::vec4);
-
-        WGPUBindGroupDescriptor forceBGD{};
-        forceBGD.layout = forceBindGroupLayout_;
-        forceBGD.entryCount = 4;
-        forceBGD.entries = forceBE;
-        WGPUBindGroup forceBG = wgpuDeviceCreateBindGroup(device, &forceBGD);
-
-        // Kick bind group (for second half-kick, same layout)
-        WGPUBindGroupEntry kickBE[3] = {};
-        kickBE[0].binding = 0;
-        kickBE[0].buffer = paramsBuffer_.get();
-        kickBE[0].offset = 0;
-        kickBE[0].size = sizeof(params);
-        kickBE[1].binding = 1;
-        kickBE[1].buffer = velocities_.get();
-        kickBE[1].offset = 0;
-        kickBE[1].size = numParticles_ * sizeof(glm::vec4);
-        kickBE[2].binding = 2;
-        kickBE[2].buffer = accelerations_.get();
-        kickBE[2].offset = 0;
-        kickBE[2].size = numParticles_ * sizeof(glm::vec4);
-
-        WGPUBindGroupDescriptor kickBGD{};
-        kickBGD.layout = kickBindGroupLayout_;
-        kickBGD.entryCount = 3;
-        kickBGD.entries = kickBE;
-        WGPUBindGroup kickBG = wgpuDeviceCreateBindGroup(device, &kickBGD);
-
-        WGPUCommandEncoder encoder = wgpu_utils::createCommandEncoder(device);
-        WGPUComputePassDescriptor passDesc{};
-        passDesc.timestampWrites = nullptr;
-
-        // Force pass
-        WGPUComputePassEncoder forcePass =
-            wgpuCommandEncoderBeginComputePass(encoder, &passDesc);
-        wgpuComputePassEncoderSetPipeline(forcePass, forcePipeline_);
-        wgpuComputePassEncoderSetBindGroup(forcePass, 0, forceBG, 0, nullptr);
-        uint32_t forceWG = (numParticles_ + 63) / 64;
-        wgpuComputePassEncoderDispatchWorkgroups(forcePass, forceWG, 1, 1);
-        wgpuComputePassEncoderEnd(forcePass);
-        wgpuComputePassEncoderRelease(forcePass);
-
-        // Second kick pass
-        WGPUComputePassEncoder kickPass =
-            wgpuCommandEncoderBeginComputePass(encoder, &passDesc);
-        wgpuComputePassEncoderSetPipeline(kickPass, kickPipeline_);
-        wgpuComputePassEncoderSetBindGroup(kickPass, 0, kickBG, 0, nullptr);
-        uint32_t kickWG = (numParticles_ + 255) / 256;
-        wgpuComputePassEncoderDispatchWorkgroups(kickPass, kickWG, 1, 1);
-        wgpuComputePassEncoderEnd(kickPass);
-        wgpuComputePassEncoderRelease(kickPass);
-
-        wgpu_utils::finishCommandEncoder(queue, encoder);
-        wgpuBindGroupRelease(forceBG);
-        wgpuBindGroupRelease(kickBG);
-    }
-
-    auto t3 = Clock::now();
-
-    // Store timing
-    lastTiming_.integrateMs =
-        std::chrono::duration<double, std::milli>(t1 - t0).count();
-    lastTiming_.treeBuildMs =
-        std::chrono::duration<double, std::milli>(t2 - t1).count();
-    lastTiming_.forceMs =
-        std::chrono::duration<double, std::milli>(t3 - t2).count();
-}
-
-// ============================================================
-// Euler Step (original behavior, preserved as fallback)
-// ============================================================
-
-void Simulation::stepEuler(WGPUDevice device, WGPUQueue queue, float dt,
-                           float softening, float theta) {
-    using Clock = std::chrono::high_resolution_clock;
-    auto t0 = Clock::now();
-
-    // Readback positions from GPU, then build octree on CPU
-    readbackState(device, queue, cpuPositions_, cpuVelocities_);
-    octree_.build(cpuPositions_);
-    size_t nodeCount = octree_.nodeCount();
-    if (nodeCount == 0) return;
-
-    auto t1 = Clock::now();
-
-    // Upload octree nodes
-    auto &nodes = octree_.getNodes();
-    octreeBuffer_.upload(queue, (void *)nodes.data(),
-                         nodeCount * sizeof(OctreeNode));
-
-    // Upload params
-    struct alignas(16) Params {
-        float dt;
-        float softening;
-        float theta;
-        uint32_t numParticles;
-        uint32_t nodeCount;
-        uint32_t paddedN;
-        float _pad[2];
-    } params;
-    params.dt = dt;
-    params.softening = softening;
-    params.theta = theta;
-    params.numParticles = static_cast<uint32_t>(numParticles_);
-    params.nodeCount = static_cast<uint32_t>(nodeCount);
-    params.paddedN = 0;
-    params._pad[0] = params._pad[1] = 0.0f;
-    paramsBuffer_.upload(queue, &params, sizeof(params));
-
-    // Create bind groups
-    WGPUBindGroupEntry forceBE[4] = {};
-    forceBE[0].binding = 0;
-    forceBE[0].buffer = paramsBuffer_.get();
-    forceBE[0].offset = 0;
-    forceBE[0].size = sizeof(params);
-    forceBE[1].binding = 1;
-    forceBE[1].buffer = positions_.get();
-    forceBE[1].offset = 0;
-    forceBE[1].size = numParticles_ * sizeof(glm::vec4);
-    forceBE[2].binding = 2;
-    forceBE[2].buffer = octreeBuffer_.get();
-    forceBE[2].offset = 0;
-    forceBE[2].size = nodeCount * sizeof(OctreeNode);
-    forceBE[3].binding = 3;
-    forceBE[3].buffer = accelerations_.get();
-    forceBE[3].offset = 0;
-    forceBE[3].size = numParticles_ * sizeof(glm::vec4);
-
-    WGPUBindGroupDescriptor forceBGD{};
-    forceBGD.layout = forceBindGroupLayout_;
-    forceBGD.entryCount = 4;
-    forceBGD.entries = forceBE;
-    WGPUBindGroup forceBG = wgpuDeviceCreateBindGroup(device, &forceBGD);
-
-    WGPUBindGroupEntry intBE[4] = {};
-    intBE[0].binding = 0;
-    intBE[0].buffer = paramsBuffer_.get();
-    intBE[0].offset = 0;
-    intBE[0].size = sizeof(params);
-    intBE[1].binding = 1;
-    intBE[1].buffer = positions_.get();
-    intBE[1].offset = 0;
-    intBE[1].size = numParticles_ * sizeof(glm::vec4);
-    intBE[2].binding = 2;
-    intBE[2].buffer = velocities_.get();
-    intBE[2].offset = 0;
-    intBE[2].size = numParticles_ * sizeof(glm::vec4);
-    intBE[3].binding = 3;
-    intBE[3].buffer = accelerations_.get();
-    intBE[3].offset = 0;
-    intBE[3].size = numParticles_ * sizeof(glm::vec4);
-
-    WGPUBindGroupDescriptor intBGD{};
-    intBGD.layout = integrateBindGroupLayout_;
-    intBGD.entryCount = 4;
-    intBGD.entries = intBE;
-    WGPUBindGroup intBG = wgpuDeviceCreateBindGroup(device, &intBGD);
-
-    // Dispatch
-    WGPUCommandEncoder encoder = wgpu_utils::createCommandEncoder(device);
-    WGPUComputePassDescriptor passDesc{};
-    passDesc.timestampWrites = nullptr;
-
-    WGPUComputePassEncoder forcePass =
-        wgpuCommandEncoderBeginComputePass(encoder, &passDesc);
-    wgpuComputePassEncoderSetPipeline(forcePass, forcePipeline_);
-    wgpuComputePassEncoderSetBindGroup(forcePass, 0, forceBG, 0, nullptr);
-    uint32_t forceWG = (numParticles_ + 63) / 64;
-    wgpuComputePassEncoderDispatchWorkgroups(forcePass, forceWG, 1, 1);
-    wgpuComputePassEncoderEnd(forcePass);
-    wgpuComputePassEncoderRelease(forcePass);
-
-    WGPUComputePassEncoder intPass =
-        wgpuCommandEncoderBeginComputePass(encoder, &passDesc);
-    wgpuComputePassEncoderSetPipeline(intPass, integratePipeline_);
-    wgpuComputePassEncoderSetBindGroup(intPass, 0, intBG, 0, nullptr);
-    uint32_t intWG = (numParticles_ + 255) / 256;
-    wgpuComputePassEncoderDispatchWorkgroups(intPass, intWG, 1, 1);
-    wgpuComputePassEncoderEnd(intPass);
-    wgpuComputePassEncoderRelease(intPass);
-
-    wgpu_utils::finishCommandEncoder(queue, encoder);
-
-    auto t2 = Clock::now();
-
-    auto t3 = Clock::now();
-
-    wgpuBindGroupRelease(forceBG);
-    wgpuBindGroupRelease(intBG);
-
-    // Store timing
-    lastTiming_.treeBuildMs =
-        std::chrono::duration<double, std::milli>(t1 - t0).count();
-    lastTiming_.forceMs =
-        std::chrono::duration<double, std::milli>(t2 - t1).count();
-    lastTiming_.integrateMs =
-        std::chrono::duration<double, std::milli>(t3 - t2).count();
 }
 
 // ============================================================
@@ -1530,6 +941,11 @@ void Simulation::stepWithDirectForce(WGPUDevice device, WGPUQueue queue,
         wgpuComputePassEncoderRelease(kickPass2);
 
         wgpu_utils::finishCommandEncoder(queue, encoder);
+
+        if (syncTiming_) {
+            wgpu_utils::flushGpuQueue(device, queue);
+        }
+
         wgpuBindGroupRelease(kickBG);
         wgpuBindGroupRelease(driftBG);
         wgpuBindGroupRelease(directBG);
@@ -1582,78 +998,162 @@ void Simulation::stepLeapfrogGpuTree(WGPUDevice device, WGPUQueue queue,
     // to avoid wgpuQueueWriteBuffer + wgpuPollEvents mid-recording
     gpuTreeBuilder_.prepareUploads(queue, N);
 
-    // Single command encoder for the entire GPU step
-    WGPUCommandEncoder encoder = wgpu_utils::createCommandEncoder(device);
-    WGPUComputePassDescriptor passDesc{};
-    passDesc.timestampWrites = nullptr;
-
     uint32_t wg256 = (numParticles_ + 255) / 256;
     uint32_t wg64 = (numParticles_ + 63) / 64;
 
     // Ensure cached bind groups exist
     ensureBindGroupsCached(device);
 
-    // --- Half-kick pass ---
-    {
-        WGPUComputePassEncoder kickPass =
-            wgpuCommandEncoderBeginComputePass(encoder, &passDesc);
-        wgpuComputePassEncoderSetPipeline(kickPass, kickPipeline_);
-        wgpuComputePassEncoderSetBindGroup(kickPass, 0, cachedKickBG_, 0, nullptr);
-        wgpuComputePassEncoderDispatchWorkgroups(kickPass, wg256, 1, 1);
-        wgpuComputePassEncoderEnd(kickPass);
-        wgpuComputePassEncoderRelease(kickPass);
+    WGPUComputePassDescriptor passDesc{};
+    passDesc.timestampWrites = nullptr;
+
+    if (benchmarkPasses_) {
+        // ---- Benchmark mode: separate submissions per phase ----
+
+        // Encoder 1: kick + drift
+        {
+            WGPUCommandEncoder encoder = wgpu_utils::createCommandEncoder(device);
+            {
+                WGPUComputePassEncoder kickPass =
+                    wgpuCommandEncoderBeginComputePass(encoder, &passDesc);
+                wgpuComputePassEncoderSetPipeline(kickPass, kickPipeline_);
+                wgpuComputePassEncoderSetBindGroup(kickPass, 0, cachedKickBG_, 0, nullptr);
+                wgpuComputePassEncoderDispatchWorkgroups(kickPass, wg256, 1, 1);
+                wgpuComputePassEncoderEnd(kickPass);
+                wgpuComputePassEncoderRelease(kickPass);
+            }
+            {
+                WGPUComputePassEncoder driftPass =
+                    wgpuCommandEncoderBeginComputePass(encoder, &passDesc);
+                wgpuComputePassEncoderSetPipeline(driftPass, driftPipeline_);
+                wgpuComputePassEncoderSetBindGroup(driftPass, 0, cachedDriftBG_, 0, nullptr);
+                wgpuComputePassEncoderDispatchWorkgroups(driftPass, wg256, 1, 1);
+                wgpuComputePassEncoderEnd(driftPass);
+                wgpuComputePassEncoderRelease(driftPass);
+            }
+            wgpu_utils::finishCommandEncoder(queue, encoder);
+            wgpu_utils::flushGpuQueue(device, queue);
+        }
+
+        auto t2 = Clock::now();
+
+        // Tree build with per-pass timing (handles its own submissions)
+        lastPassTiming_ = gpuTreeBuilder_.recordTreeBuildTimed(
+            device, queue, positions_.get(), paramsBuffer_.get(), N);
+
+        auto t3 = Clock::now();
+
+        // Encoder 2: BVH force + second kick
+        {
+            WGPUCommandEncoder encoder = wgpu_utils::createCommandEncoder(device);
+            {
+                WGPUComputePassEncoder forcePass =
+                    wgpuCommandEncoderBeginComputePass(encoder, &passDesc);
+                wgpuComputePassEncoderSetPipeline(forcePass, bvhForcePipeline_);
+                wgpuComputePassEncoderSetBindGroup(forcePass, 0, cachedBvhForceBG_, 0, nullptr);
+                wgpuComputePassEncoderDispatchWorkgroups(forcePass, wg64, 1, 1);
+                wgpuComputePassEncoderEnd(forcePass);
+                wgpuComputePassEncoderRelease(forcePass);
+            }
+            {
+                WGPUComputePassEncoder kickPass =
+                    wgpuCommandEncoderBeginComputePass(encoder, &passDesc);
+                wgpuComputePassEncoderSetPipeline(kickPass, kickPipeline_);
+                wgpuComputePassEncoderSetBindGroup(kickPass, 0, cachedKickBG_, 0, nullptr);
+                wgpuComputePassEncoderDispatchWorkgroups(kickPass, wg256, 1, 1);
+                wgpuComputePassEncoderEnd(kickPass);
+                wgpuComputePassEncoderRelease(kickPass);
+            }
+            wgpu_utils::finishCommandEncoder(queue, encoder);
+            wgpu_utils::flushGpuQueue(device, queue);
+        }
+
+        auto t4 = Clock::now();
+
+        lastTiming_.integrateMs =
+            std::chrono::duration<double, std::milli>(t2 - t0).count();
+        lastTiming_.treeBuildMs = lastPassTiming_.totalMs;
+        lastTiming_.forceMs =
+            std::chrono::duration<double, std::milli>(t4 - t3).count();
+        lastTiming_.bboxReduceMs = lastPassTiming_.bboxReduceMs;
+        lastTiming_.mortonMs = lastPassTiming_.mortonMs;
+        lastTiming_.radixSortMs = lastPassTiming_.radixSortMs;
+        lastTiming_.karrasMs = lastPassTiming_.karrasMs;
+        lastTiming_.leafInitMs = lastPassTiming_.leafInitMs;
+        lastTiming_.aggregateMs = lastPassTiming_.aggregateMs;
+        lastTiming_.hasPassBreakdown = true;
+
+    } else {
+        // ---- Normal mode: single command encoder ----
+        WGPUCommandEncoder encoder = wgpu_utils::createCommandEncoder(device);
+
+        // --- Half-kick pass ---
+        {
+            WGPUComputePassEncoder kickPass =
+                wgpuCommandEncoderBeginComputePass(encoder, &passDesc);
+            wgpuComputePassEncoderSetPipeline(kickPass, kickPipeline_);
+            wgpuComputePassEncoderSetBindGroup(kickPass, 0, cachedKickBG_, 0, nullptr);
+            wgpuComputePassEncoderDispatchWorkgroups(kickPass, wg256, 1, 1);
+            wgpuComputePassEncoderEnd(kickPass);
+            wgpuComputePassEncoderRelease(kickPass);
+        }
+
+        // --- Drift pass ---
+        {
+            WGPUComputePassEncoder driftPass =
+                wgpuCommandEncoderBeginComputePass(encoder, &passDesc);
+            wgpuComputePassEncoderSetPipeline(driftPass, driftPipeline_);
+            wgpuComputePassEncoderSetBindGroup(driftPass, 0, cachedDriftBG_, 0, nullptr);
+            wgpuComputePassEncoderDispatchWorkgroups(driftPass, wg256, 1, 1);
+            wgpuComputePassEncoderEnd(driftPass);
+            wgpuComputePassEncoderRelease(driftPass);
+        }
+
+        auto t2 = Clock::now();
+
+        // --- GPU tree build (~7+ compute passes) ---
+        gpuTreeBuilder_.recordTreeBuild(device, encoder,
+                                         positions_.get(), paramsBuffer_.get(), N);
+
+        auto t3 = Clock::now();
+
+        // --- BVH force pass ---
+        {
+            WGPUComputePassEncoder forcePass =
+                wgpuCommandEncoderBeginComputePass(encoder, &passDesc);
+            wgpuComputePassEncoderSetPipeline(forcePass, bvhForcePipeline_);
+            wgpuComputePassEncoderSetBindGroup(forcePass, 0, cachedBvhForceBG_, 0, nullptr);
+            wgpuComputePassEncoderDispatchWorkgroups(forcePass, wg64, 1, 1);
+            wgpuComputePassEncoderEnd(forcePass);
+            wgpuComputePassEncoderRelease(forcePass);
+        }
+
+        // --- Second half-kick pass (reuses cached kick bind group) ---
+        {
+            WGPUComputePassEncoder kickPass =
+                wgpuCommandEncoderBeginComputePass(encoder, &passDesc);
+            wgpuComputePassEncoderSetPipeline(kickPass, kickPipeline_);
+            wgpuComputePassEncoderSetBindGroup(kickPass, 0, cachedKickBG_, 0, nullptr);
+            wgpuComputePassEncoderDispatchWorkgroups(kickPass, wg256, 1, 1);
+            wgpuComputePassEncoderEnd(kickPass);
+            wgpuComputePassEncoderRelease(kickPass);
+        }
+
+        // Submit everything
+        wgpu_utils::finishCommandEncoder(queue, encoder);
+
+        if (syncTiming_) {
+            wgpu_utils::flushGpuQueue(device, queue);
+        }
+
+        auto t4 = Clock::now();
+
+        lastTiming_.integrateMs =
+            std::chrono::duration<double, std::milli>(t1 - t0).count();
+        lastTiming_.treeBuildMs =
+            std::chrono::duration<double, std::milli>(t3 - t2).count();
+        lastTiming_.forceMs =
+            std::chrono::duration<double, std::milli>(t4 - t3).count();
+        lastTiming_.hasPassBreakdown = false;
     }
-
-    // --- Drift pass ---
-    {
-        WGPUComputePassEncoder driftPass =
-            wgpuCommandEncoderBeginComputePass(encoder, &passDesc);
-        wgpuComputePassEncoderSetPipeline(driftPass, driftPipeline_);
-        wgpuComputePassEncoderSetBindGroup(driftPass, 0, cachedDriftBG_, 0, nullptr);
-        wgpuComputePassEncoderDispatchWorkgroups(driftPass, wg256, 1, 1);
-        wgpuComputePassEncoderEnd(driftPass);
-        wgpuComputePassEncoderRelease(driftPass);
-    }
-
-    auto t2 = Clock::now();
-
-    // --- GPU tree build (~7+ compute passes) ---
-    gpuTreeBuilder_.recordTreeBuild(device, encoder,
-                                     positions_.get(), paramsBuffer_.get(), N);
-
-    auto t3 = Clock::now();
-
-    // --- BVH force pass ---
-    {
-        WGPUComputePassEncoder forcePass =
-            wgpuCommandEncoderBeginComputePass(encoder, &passDesc);
-        wgpuComputePassEncoderSetPipeline(forcePass, bvhForcePipeline_);
-        wgpuComputePassEncoderSetBindGroup(forcePass, 0, cachedBvhForceBG_, 0, nullptr);
-        wgpuComputePassEncoderDispatchWorkgroups(forcePass, wg64, 1, 1);
-        wgpuComputePassEncoderEnd(forcePass);
-        wgpuComputePassEncoderRelease(forcePass);
-    }
-
-    // --- Second half-kick pass (reuses cached kick bind group) ---
-    {
-        WGPUComputePassEncoder kickPass =
-            wgpuCommandEncoderBeginComputePass(encoder, &passDesc);
-        wgpuComputePassEncoderSetPipeline(kickPass, kickPipeline_);
-        wgpuComputePassEncoderSetBindGroup(kickPass, 0, cachedKickBG_, 0, nullptr);
-        wgpuComputePassEncoderDispatchWorkgroups(kickPass, wg256, 1, 1);
-        wgpuComputePassEncoderEnd(kickPass);
-        wgpuComputePassEncoderRelease(kickPass);
-    }
-
-    // Submit everything
-    wgpu_utils::finishCommandEncoder(queue, encoder);
-
-    auto t4 = Clock::now();
-
-    lastTiming_.integrateMs =
-        std::chrono::duration<double, std::milli>(t1 - t0).count();
-    lastTiming_.treeBuildMs =
-        std::chrono::duration<double, std::milli>(t3 - t2).count();
-    lastTiming_.forceMs =
-        std::chrono::duration<double, std::milli>(t4 - t3).count();
 }

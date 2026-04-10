@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en-us">
+<head>
+<meta charset="utf-8">
+<title>GalaxySim</title>
+<style>
+body { margin: 0; background: #000; overflow: hidden; }
+canvas { width: 100vw; height: 100vh; display: block; }
+#output { display: none; }
+</style>
+</head>
+<body>
+<canvas id="canvas" oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
+<textarea id="output"></textarea>
+<script>
+// Parse URL query params into Emscripten CLI arguments
+(function() {
+  var params = new URLSearchParams(window.location.search);
+  var args = [];
+  params.forEach(function(value, key) {
+    if (value === '') {
+      args.push('--' + key);
+    } else {
+      args.push('--' + key);
+      args.push(value);
+    }
+  });
+  if (args.length > 0) {
+    console.log('CLI args from URL:', args);
+    window.__galaxysim_args = args;
+  }
+})();
+
+var Module = {
+  arguments: window.__galaxysim_args || [],
+  canvas: document.getElementById('canvas'),
+  print: function(text) { console.log(text); },
+  printErr: function(text) { console.error(text); },
+  setStatus: function(text) { if (text) console.log(text); }
+};
+</script>
+{{{ SCRIPT }}}
+</body>
+</html>

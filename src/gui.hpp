@@ -10,7 +10,8 @@ struct SimParams {
     int numParticles = 10000;
     bool paused = true;
     bool stepOnce = false;
-    bool showOctree = false;
+    bool showTrails = false;
+    float trailLength = 0.92f;
 };
 
 class GUI {
@@ -45,8 +46,6 @@ public:
 
     // Config display
     void setScenarioName(const char *name) { scenarioName_ = name; }
-    void setIntegratorName(const char *name) { integratorName_ = name; }
-    void setTreeMethodName(const char *name) { treeMethodName_ = name; }
     void setForceMethodName(const char *name) { forceMethodName_ = name; }
 
 private:
@@ -77,7 +76,5 @@ private:
 
     // Config info
     const char *scenarioName_ = "Unknown";
-    const char *integratorName_ = "Unknown";
-    const char *treeMethodName_ = "Unknown";
     const char *forceMethodName_ = "Unknown";
 };

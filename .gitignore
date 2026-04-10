@@ -1,6 +1,7 @@
 # Build
 build/
 build-web/
+build-dawn/
 
 # IDE
 .vscode/
