@@ -70,6 +70,8 @@ public:
         renderer_.initialize(device_, surfaceFormat_, fbw, fbh);
 
         simulation_.initialize(device_, queue_, config_);
+        simulation_.setSyncTiming(config_.syncTiming);
+        simulation_.setBenchmarkPasses(config_.benchmarkPasses);
         lastParticleCount_ = config_.numParticles;
 
         // Initialize GUI with config values
