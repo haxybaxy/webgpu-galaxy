@@ -595,6 +595,51 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 }
 )";
 
+// --- Compact traversal node copy ---
+static const char *kCompactShader = R"(
+struct Params {
+    dt: f32,
+    softening: f32,
+    theta: f32,
+    numParticles: u32,
+    nodeCount: u32,
+    paddedN: u32,
+}
+
+struct BVHNode {
+    centerOfMass: vec4f,
+    boundsMin: vec4f,
+    boundsMax: vec4f,
+    left: i32,
+    right: i32,
+    parent: i32,
+    particleIdx: i32,
+}
+
+struct TraversalNode {
+    centerOfMass: vec4f,
+    openingRadius: f32,
+    left: i32,
+    right: i32,
+    _pad: f32,
+}
+
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var<storage, read> bvhNodes: array<BVHNode>;
+@group(0) @binding(2) var<storage, read_write> traversalNodes: array<TraversalNode>;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3u) {
+    let i = gid.x;
+    if (i >= params.nodeCount) { return; }
+    let node = bvhNodes[i];
+    traversalNodes[i].centerOfMass = node.centerOfMass;
+    traversalNodes[i].openingRadius = node.boundsMax.w;
+    traversalNodes[i].left = node.left;
+    traversalNodes[i].right = node.right;
+}
+)";
+
 // ============================================================
 // Helper: next power of 2
 // ============================================================
@@ -642,6 +687,11 @@ void GpuTreeBuilder::initialize(WGPUDevice device, uint32_t maxParticles) {
     bvhNodes_.initialize(device,
         WGPUBufferUsage_Storage | WGPUBufferUsage_CopyDst | WGPUBufferUsage_CopySrc,
         maxNodes * kNodeSize);
+
+    // Compact traversal nodes for force shader (32 bytes per node)
+    traversalNodes_.initialize(device,
+        WGPUBufferUsage_Storage | WGPUBufferUsage_CopyDst,
+        maxNodes * kTraversalNodeSize);
 
     // Atomic counters for internal nodes
     atomicCounters_.initialize(device,
@@ -875,8 +925,19 @@ void GpuTreeBuilder::createPipelines(WGPUDevice device) {
         aggregatePipeline_ = makePipeline(device, aggregateLayout_, kAggregateShader, "Aggregate");
     }
 
+    // --- Compact: params(uniform), bvhNodes(ro), traversalNodes(rw) ---
+    {
+        WGPUBindGroupLayoutEntry entries[3] = {
+            storageEntry(0, WGPUBufferBindingType_Uniform),
+            storageEntry(1, WGPUBufferBindingType_ReadOnlyStorage),
+            storageEntry(2, WGPUBufferBindingType_Storage),
+        };
+        compactLayout_ = makeLayout(device, entries, 3);
+        compactPipeline_ = makePipeline(device, compactLayout_, kCompactShader, "Compact");
+    }
+
     pipelinesCreated_ = true;
-    spdlog::info("GpuTreeBuilder: all 10 pipelines created");
+    spdlog::info("GpuTreeBuilder: all 11 pipelines created");
 }
 
 // ============================================================
@@ -1116,6 +1177,16 @@ void GpuTreeBuilder::ensureBindGroupsCached(WGPUDevice device,
         cachedAggregateBG_ = makeBG(aggregateLayout_, e, 3);
     }
 
+    // Compact (copy to traversal nodes)
+    {
+        WGPUBindGroupEntry e[3] = {
+            entry(0, paramsBuffer, 32),
+            entry(1, bvhNodes_.get(), numNodes * kNodeSize),
+            entry(2, traversalNodes_.get(), numNodes * kTraversalNodeSize),
+        };
+        cachedCompactBG_ = makeBG(compactLayout_, e, 3);
+    }
+
     cachedBGParticleCount_ = numParticles;
     cachedPositionsBuffer_ = positionsBuffer;
     cachedParamsBuffer_ = paramsBuffer;
@@ -1273,6 +1344,18 @@ void GpuTreeBuilder::recordTreeBuild(WGPUDevice device,
         wgpuComputePassEncoderSetPipeline(pass, aggregatePipeline_);
         wgpuComputePassEncoderSetBindGroup(pass, 0, cachedAggregateBG_, 0, nullptr);
         wgpuComputePassEncoderDispatchWorkgroups(pass, leafWG, 1, 1);
+        wgpuComputePassEncoderEnd(pass);
+        wgpuComputePassEncoderRelease(pass);
+    }
+
+    // ---- Pass 8: Compact traversal nodes ----
+    {
+        uint32_t nodeCount = 2 * numParticles - 1;
+        uint32_t nodeWG = (nodeCount + 255) / 256;
+        WGPUComputePassEncoder pass = wgpuCommandEncoderBeginComputePass(encoder, &passDesc);
+        wgpuComputePassEncoderSetPipeline(pass, compactPipeline_);
+        wgpuComputePassEncoderSetBindGroup(pass, 0, cachedCompactBG_, 0, nullptr);
+        wgpuComputePassEncoderDispatchWorkgroups(pass, nodeWG, 1, 1);
         wgpuComputePassEncoderEnd(pass);
         wgpuComputePassEncoderRelease(pass);
     }
@@ -1465,6 +1548,21 @@ TreePassTiming GpuTreeBuilder::recordTreeBuildTimed(
         wgpu_utils::finishCommandEncoder(queue, enc);
         wgpu_utils::flushGpuQueue(device, queue);
         timing.aggregateMs = ms(Clock::now() - t0).count();
+    }
+
+    // ---- Compact traversal nodes (pass 8, included in aggregate timing) ----
+    {
+        WGPUCommandEncoder enc = wgpu_utils::createCommandEncoder(device);
+        uint32_t nodeCount = 2 * numParticles - 1;
+        uint32_t nodeWG = (nodeCount + 255) / 256;
+        WGPUComputePassEncoder pass = wgpuCommandEncoderBeginComputePass(enc, &passDesc);
+        wgpuComputePassEncoderSetPipeline(pass, compactPipeline_);
+        wgpuComputePassEncoderSetBindGroup(pass, 0, cachedCompactBG_, 0, nullptr);
+        wgpuComputePassEncoderDispatchWorkgroups(pass, nodeWG, 1, 1);
+        wgpuComputePassEncoderEnd(pass);
+        wgpuComputePassEncoderRelease(pass);
+        wgpu_utils::finishCommandEncoder(queue, enc);
+        wgpu_utils::flushGpuQueue(device, queue);
     }
 
     timing.totalMs = timing.bboxReduceMs + timing.mortonMs + timing.radixSortMs +

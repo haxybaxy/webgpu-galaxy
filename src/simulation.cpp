@@ -106,7 +106,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 }
 )";
 
-// BVH force traversal shader (binary tree, float32 bounds)
+// BVH force traversal shader (compact 32-byte traversal nodes)
 static const char *kBvhForceShaderSource = R"(
 struct Params {
     dt: f32,
@@ -117,19 +117,17 @@ struct Params {
     paddedN: u32,
 }
 
-struct BVHNode {
+struct TraversalNode {
     centerOfMass: vec4f,
-    boundsMin: vec4f,
-    boundsMax: vec4f,
+    openingRadius: f32,
     left: i32,
     right: i32,
-    parent: i32,
-    particleIdx: i32,
+    _pad: f32,
 }
 
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var<storage, read> positions: array<vec4f>;
-@group(0) @binding(2) var<storage, read> bvhNodes: array<BVHNode>;
+@group(0) @binding(2) var<storage, read> nodes: array<TraversalNode>;
 @group(0) @binding(3) var<storage, read_write> accelerations: array<vec4f>;
 
 const G: f32 = 1.0;
@@ -154,13 +152,11 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         let nodeIdx = stack[top];
         if (nodeIdx < 0 || u32(nodeIdx) >= params.nodeCount) { continue; }
 
-        let node = bvhNodes[nodeIdx];
+        let node = nodes[nodeIdx];
         let diff = node.centerOfMass.xyz - pos;
         let distSq = dot(diff, diff) + softSq;
         let mass = node.centerOfMass.w;
-
-        // Opening radius precomputed in aggregate pass (stored in boundsMax.w).
-        let halfExtent = node.boundsMax.w;
+        let halfExtent = node.openingRadius;
 
         let isLeaf = (node.left < 0 && node.right < 0);
 
@@ -688,7 +684,7 @@ void Simulation::ensureBindGroupsCached(WGPUDevice device) {
         WGPUBindGroupEntry e[4] = {};
         e[0].binding = 0; e[0].buffer = paramsBuffer_.get(); e[0].size = 32;
         e[1].binding = 1; e[1].buffer = positions_.get(); e[1].size = N * sizeof(glm::vec4);
-        e[2].binding = 2; e[2].buffer = gpuTreeBuilder_.getBvhNodesBuffer(); e[2].size = nodeCount * GpuTreeBuilder::kNodeSize;
+        e[2].binding = 2; e[2].buffer = gpuTreeBuilder_.getTraversalNodesBuffer(); e[2].size = nodeCount * GpuTreeBuilder::kTraversalNodeSize;
         e[3].binding = 3; e[3].buffer = accelerations_.get(); e[3].size = N * sizeof(glm::vec4);
         cachedBvhForceBG_ = makeBG(bvhForceBindGroupLayout_, e, 4);
     }

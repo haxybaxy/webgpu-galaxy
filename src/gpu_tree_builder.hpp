@@ -44,11 +44,13 @@ public:
                                         uint32_t numParticles);
 
     WGPUBuffer getBvhNodesBuffer() const { return bvhNodes_.get(); }
+    WGPUBuffer getTraversalNodesBuffer() const { return traversalNodes_.get(); }
     WGPUBuffer getBboxResultBuffer() const { return bboxResult_.get(); }
     int getNodeCount(int N) const { return (N <= 0) ? 0 : 2 * N - 1; }
     uint32_t getPaddedN(uint32_t N) const;
     uint32_t getMaxParticles() const { return maxParticles_; }
     static constexpr uint32_t kNodeSize = 64;
+    static constexpr uint32_t kTraversalNodeSize = 32;
 
 private:
     void createPipelines(WGPUDevice device);
@@ -70,6 +72,7 @@ private:
     wgpu_utils::Buffer radixParamsBuffer_;
     wgpu_utils::Buffer scanParamsBuffer_;
     wgpu_utils::Buffer bvhNodes_;
+    wgpu_utils::Buffer traversalNodes_;
     wgpu_utils::Buffer atomicCounters_;
     wgpu_utils::Buffer numWorkgroupsBuffer_;  // tiny uniform for bbox pass 2
 
@@ -84,6 +87,7 @@ private:
     WGPUComputePipeline karrasPipeline_ = nullptr;
     WGPUComputePipeline leafInitPipeline_ = nullptr;
     WGPUComputePipeline aggregatePipeline_ = nullptr;
+    WGPUComputePipeline compactPipeline_ = nullptr;
 
     // Bind group layouts
     WGPUBindGroupLayout bboxPass1Layout_ = nullptr;
@@ -96,6 +100,7 @@ private:
     WGPUBindGroupLayout karrasLayout_ = nullptr;
     WGPUBindGroupLayout leafInitLayout_ = nullptr;
     WGPUBindGroupLayout aggregateLayout_ = nullptr;
+    WGPUBindGroupLayout compactLayout_ = nullptr;
 
     // Cached bind groups (invalidated when particle count changes)
     WGPUBindGroup cachedBboxPass1BG_ = nullptr;
@@ -109,6 +114,7 @@ private:
     WGPUBindGroup cachedKarrasBG_ = nullptr;
     WGPUBindGroup cachedLeafInitBG_ = nullptr;
     WGPUBindGroup cachedAggregateBG_ = nullptr;
+    WGPUBindGroup cachedCompactBG_ = nullptr;
     uint32_t cachedBGParticleCount_ = 0;
     WGPUBuffer cachedPositionsBuffer_ = nullptr;
     WGPUBuffer cachedParamsBuffer_ = nullptr;
