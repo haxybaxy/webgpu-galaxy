@@ -220,11 +220,16 @@ void flushGpuQueue(WGPUDevice device, WGPUQueue queue) {
     wgpuBufferRelease(fence);
 #elif defined(__EMSCRIPTEN__)
     // Emscripten's OnSubmittedWorkDone also fires on submission, not GPU completion.
-    // Use same buffer-map fence, with emscripten_sleep for the poll loop.
+    // Use buffer-map fence with a queue write to ensure ordering — a freshly created
+    // buffer has no queue dependency, so mapAsync could resolve immediately without
+    // waiting for prior GPU work. The writeBuffer is queue-ordered, forcing the
+    // subsequent map to wait for all previously submitted commands.
     WGPUBufferDescriptor bufDesc{};
     bufDesc.size = 4;
     bufDesc.usage = WGPUBufferUsage_MapRead | WGPUBufferUsage_CopyDst;
     WGPUBuffer fence = wgpuDeviceCreateBuffer(device, &bufDesc);
+    uint32_t zero = 0;
+    wgpuQueueWriteBuffer(queue, fence, 0, &zero, sizeof(zero));
     bool done = false;
     wgpuBufferMapAsync(fence, WGPUMapMode_Read, 0, 4,
         [](WGPUBufferMapAsyncStatus, void *ud) { *static_cast<bool *>(ud) = true; },
