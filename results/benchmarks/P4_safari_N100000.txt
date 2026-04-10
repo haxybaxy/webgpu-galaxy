@@ -1,4 +1,4 @@
-step,time,tree_build_ms,force_ms,integrate_ms,bbox_ms,morton_ms,radix_sort_ms,karras_ms,leaf_init_ms,aggregate_ms (galaxysim.html, line 1)
+step,time,tree_build_ms,force_ms,integrate_ms,bbox_ms,morton_ms,radix_sort_ms,karras_ms,leaf_init_ms,aggregate_ms
 1,0.001000,41.000,345.000,5.000,5.000,4.000,18.000,5.000,4.000,5.000
 2,0.002000,30.000,328.000,5.000,5.000,4.000,8.000,5.000,4.000,4.000
 3,0.003000,31.000,328.000,5.000,4.000,5.000,8.000,5.000,4.000,5.000
