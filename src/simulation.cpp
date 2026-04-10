@@ -106,7 +106,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 }
 )";
 
-// BVH force traversal shader (binary tree, float32 bounds)
+// BVH force traversal shader (compact 32-byte traversal nodes)
 static const char *kBvhForceShaderSource = R"(
 struct Params {
     dt: f32,
@@ -117,29 +117,30 @@ struct Params {
     paddedN: u32,
 }
 
-struct BVHNode {
+struct TraversalNode {
     centerOfMass: vec4f,
-    boundsMin: vec4f,
-    boundsMax: vec4f,
+    openingRadius: f32,
     left: i32,
     right: i32,
-    parent: i32,
-    particleIdx: i32,
+    _pad: f32,
 }
 
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var<storage, read> positions: array<vec4f>;
-@group(0) @binding(2) var<storage, read> bvhNodes: array<BVHNode>;
+@group(0) @binding(2) var<storage, read> nodes: array<TraversalNode>;
 @group(0) @binding(3) var<storage, read_write> accelerations: array<vec4f>;
+@group(0) @binding(4) var<storage, read> sortIndices: array<u32>;
 
 const G: f32 = 1.0;
 
-@compute @workgroup_size(64)
+@compute @workgroup_size(128)
 fn main(@builtin(global_invocation_id) gid: vec3u) {
     let i = gid.x;
     if (i >= params.numParticles) { return; }
 
-    let pos = positions[i].xyz;
+    // Map thread to Morton-ordered particle for cache-coherent traversal
+    let particleIdx = sortIndices[i];
+    let pos = positions[particleIdx].xyz;
     var acc = vec3f(0.0);
 
     var stack: array<i32, 64>;
@@ -154,21 +155,11 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         let nodeIdx = stack[top];
         if (nodeIdx < 0 || u32(nodeIdx) >= params.nodeCount) { continue; }
 
-        let node = bvhNodes[nodeIdx];
+        let node = nodes[nodeIdx];
         let diff = node.centerOfMass.xyz - pos;
         let distSq = dot(diff, diff) + softSq;
         let mass = node.centerOfMass.w;
-
-        // Compute bounding-sphere radius at COM from float AABB bounds.
-        // BVH binary trees are deeper than octrees (log2 N vs log8 N), and
-        // tight AABBs make the criterion more aggressive at every level.
-        // Scale by log2(mass) to make high-level nodes (many particles)
-        // proportionally more conservative, matching octree behavior.
-        let boundsMin = node.boundsMin.xyz;
-        let boundsMax = node.boundsMax.xyz;
-        let comToCorner = max(abs(node.centerOfMass.xyz - boundsMin), abs(node.centerOfMass.xyz - boundsMax));
-        let logMass = log2(max(mass, 1.0));
-        let halfExtent = length(comToCorner) * (1.0 + logMass * 0.6);
+        let halfExtent = node.openingRadius;
 
         let isLeaf = (node.left < 0 && node.right < 0);
 
@@ -184,7 +175,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         }
     }
 
-    accelerations[i] = vec4f(acc, 0.0);
+    accelerations[particleIdx] = vec4f(acc, 0.0);
 }
 )";
 
@@ -535,8 +526,8 @@ void Simulation::createComputePipelines(WGPUDevice device) {
     wgpuShaderModuleRelease(directShader);
     wgpuPipelineLayoutRelease(directPL);
 
-    // --- BVH force pipeline: params(uniform), positions(ro), bvhNodes(ro), accelerations(rw) ---
-    WGPUBindGroupLayoutEntry bvhEntries[4] = {};
+    // --- BVH force pipeline: params(uniform), positions(ro), nodes(ro), accelerations(rw), sortIndices(ro) ---
+    WGPUBindGroupLayoutEntry bvhEntries[5] = {};
     bvhEntries[0].binding = 0;
     bvhEntries[0].visibility = WGPUShaderStage_Compute;
     bvhEntries[0].buffer.type = WGPUBufferBindingType_Uniform;
@@ -553,9 +544,13 @@ void Simulation::createComputePipelines(WGPUDevice device) {
     bvhEntries[3].visibility = WGPUShaderStage_Compute;
     bvhEntries[3].buffer.type = WGPUBufferBindingType_Storage;
     bvhEntries[3].buffer.minBindingSize = 0;
+    bvhEntries[4].binding = 4;
+    bvhEntries[4].visibility = WGPUShaderStage_Compute;
+    bvhEntries[4].buffer.type = WGPUBufferBindingType_ReadOnlyStorage;
+    bvhEntries[4].buffer.minBindingSize = 0;
 
     WGPUBindGroupLayoutDescriptor bvhLayoutDesc{};
-    bvhLayoutDesc.entryCount = 4;
+    bvhLayoutDesc.entryCount = 5;
     bvhLayoutDesc.entries = bvhEntries;
     bvhForceBindGroupLayout_ =
         wgpuDeviceCreateBindGroupLayout(device, &bvhLayoutDesc);
@@ -691,14 +686,16 @@ void Simulation::ensureBindGroupsCached(WGPUDevice device) {
         cachedDriftBG_ = makeBG(driftBindGroupLayout_, e, 3);
     }
 
-    // BVH force bind group (params, positions, bvhNodes, accelerations)
+    // BVH force bind group (params, positions, nodes, accelerations, sortIndices)
     {
-        WGPUBindGroupEntry e[4] = {};
+        WGPUBindGroupEntry e[5] = {};
+        uint32_t paddedN = gpuTreeBuilder_.getPaddedN(N);
         e[0].binding = 0; e[0].buffer = paramsBuffer_.get(); e[0].size = 32;
         e[1].binding = 1; e[1].buffer = positions_.get(); e[1].size = N * sizeof(glm::vec4);
-        e[2].binding = 2; e[2].buffer = gpuTreeBuilder_.getBvhNodesBuffer(); e[2].size = nodeCount * GpuTreeBuilder::kNodeSize;
+        e[2].binding = 2; e[2].buffer = gpuTreeBuilder_.getTraversalNodesBuffer(); e[2].size = nodeCount * GpuTreeBuilder::kTraversalNodeSize;
         e[3].binding = 3; e[3].buffer = accelerations_.get(); e[3].size = N * sizeof(glm::vec4);
-        cachedBvhForceBG_ = makeBG(bvhForceBindGroupLayout_, e, 4);
+        e[4].binding = 4; e[4].buffer = gpuTreeBuilder_.getSortIndicesBuffer(); e[4].size = paddedN * sizeof(uint32_t);
+        cachedBvhForceBG_ = makeBG(bvhForceBindGroupLayout_, e, 5);
     }
 
     cachedBGParticleCount_ = numParticles_;
@@ -902,7 +899,7 @@ void Simulation::stepWithDirectForce(WGPUDevice device, WGPUQueue queue,
         passDesc.timestampWrites = nullptr;
 
         uint32_t wg256 = (numParticles_ + 255) / 256;
-        uint32_t wg64 = (numParticles_ + 63) / 64;
+        uint32_t wgForce = (numParticles_ + 127) / 128;
 
         // Kick pass (half-kick)
         WGPUComputePassEncoder kickPass =
@@ -927,7 +924,7 @@ void Simulation::stepWithDirectForce(WGPUDevice device, WGPUQueue queue,
             wgpuCommandEncoderBeginComputePass(encoder, &passDesc);
         wgpuComputePassEncoderSetPipeline(forcePass, directForcePipeline_);
         wgpuComputePassEncoderSetBindGroup(forcePass, 0, directBG, 0, nullptr);
-        wgpuComputePassEncoderDispatchWorkgroups(forcePass, wg64, 1, 1);
+        wgpuComputePassEncoderDispatchWorkgroups(forcePass, wgForce, 1, 1);
         wgpuComputePassEncoderEnd(forcePass);
         wgpuComputePassEncoderRelease(forcePass);
 
@@ -999,7 +996,7 @@ void Simulation::stepLeapfrogGpuTree(WGPUDevice device, WGPUQueue queue,
     gpuTreeBuilder_.prepareUploads(queue, N);
 
     uint32_t wg256 = (numParticles_ + 255) / 256;
-    uint32_t wg64 = (numParticles_ + 63) / 64;
+    uint32_t wgForce = (numParticles_ + 127) / 128;
 
     // Ensure cached bind groups exist
     ensureBindGroupsCached(device);
@@ -1051,7 +1048,7 @@ void Simulation::stepLeapfrogGpuTree(WGPUDevice device, WGPUQueue queue,
                     wgpuCommandEncoderBeginComputePass(encoder, &passDesc);
                 wgpuComputePassEncoderSetPipeline(forcePass, bvhForcePipeline_);
                 wgpuComputePassEncoderSetBindGroup(forcePass, 0, cachedBvhForceBG_, 0, nullptr);
-                wgpuComputePassEncoderDispatchWorkgroups(forcePass, wg64, 1, 1);
+                wgpuComputePassEncoderDispatchWorkgroups(forcePass, wgForce, 1, 1);
                 wgpuComputePassEncoderEnd(forcePass);
                 wgpuComputePassEncoderRelease(forcePass);
             }
@@ -1123,7 +1120,7 @@ void Simulation::stepLeapfrogGpuTree(WGPUDevice device, WGPUQueue queue,
                 wgpuCommandEncoderBeginComputePass(encoder, &passDesc);
             wgpuComputePassEncoderSetPipeline(forcePass, bvhForcePipeline_);
             wgpuComputePassEncoderSetBindGroup(forcePass, 0, cachedBvhForceBG_, 0, nullptr);
-            wgpuComputePassEncoderDispatchWorkgroups(forcePass, wg64, 1, 1);
+            wgpuComputePassEncoderDispatchWorkgroups(forcePass, wgForce, 1, 1);
             wgpuComputePassEncoderEnd(forcePass);
             wgpuComputePassEncoderRelease(forcePass);
         }
