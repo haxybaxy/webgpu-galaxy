@@ -333,6 +333,7 @@ void Simulation::initRotatingDisk(const Config &config) {
 void Simulation::computeInitialForces(WGPUDevice device, WGPUQueue queue,
                                       float softening, float theta) {
     uint32_t N = static_cast<uint32_t>(numParticles_);
+    spdlog::info("[INITFORCE] N={} forceMethod={}", N, forceMethod_ == ForceMethod::Direct ? "direct" : "tree");
 
     if (forceMethod_ == ForceMethod::Direct) {
         // Direct O(N²) force pass
@@ -367,6 +368,7 @@ void Simulation::computeInitialForces(WGPUDevice device, WGPUQueue queue,
         // BVH tree force pass
         uint32_t paddedN = gpuTreeBuilder_.getPaddedN(N);
         uint32_t nodeCount = 2 * N - 1;
+        spdlog::info("[INITFORCE] Tree path: paddedN={} nodeCount={}", paddedN, nodeCount);
 
         struct alignas(16) Params {
             float dt; float softening; float theta;
@@ -374,13 +376,18 @@ void Simulation::computeInitialForces(WGPUDevice device, WGPUQueue queue,
             float _pad[2];
         } params{0.0f, softening, theta, N, nodeCount, paddedN, {0.0f, 0.0f}};
         paramsBuffer_.upload(queue, &params, sizeof(params));
+        spdlog::info("[INITFORCE] Params uploaded, paramsBuffer={}", (void*)paramsBuffer_.get());
 
+        spdlog::info("[INITFORCE] prepareUploads...");
         gpuTreeBuilder_.prepareUploads(queue, N);
+        spdlog::info("[INITFORCE] ensureBindGroupsCached...");
         ensureBindGroupsCached(device);
 
+        spdlog::info("[INITFORCE] Recording tree build + force pass...");
         WGPUCommandEncoder encoder = wgpu_utils::createCommandEncoder(device);
         gpuTreeBuilder_.recordTreeBuild(device, encoder,
                                          positions_.get(), paramsBuffer_.get(), N);
+        spdlog::info("[INITFORCE] Tree build recorded, now BVH force pass with bg={}", (void*)cachedBvhForceBG_);
 
         WGPUComputePassDescriptor passDesc{}; passDesc.timestampWrites = nullptr;
         WGPUComputePassEncoder forcePass = wgpuCommandEncoderBeginComputePass(encoder, &passDesc);
@@ -389,9 +396,10 @@ void Simulation::computeInitialForces(WGPUDevice device, WGPUQueue queue,
         wgpuComputePassEncoderDispatchWorkgroups(forcePass, (N + 63) / 64, 1, 1);
         wgpuComputePassEncoderEnd(forcePass);
         wgpuComputePassEncoderRelease(forcePass);
+        spdlog::info("[INITFORCE] Submitting command buffer...");
         wgpu_utils::finishCommandEncoder(queue, encoder);
 
-        spdlog::info("Initial forces computed ({} BVH nodes)", nodeCount);
+        spdlog::info("[INITFORCE] Initial forces computed ({} BVH nodes)", nodeCount);
     }
 }
 
@@ -629,20 +637,61 @@ void Simulation::initialize(WGPUDevice device, WGPUQueue queue,
 
 void Simulation::reinitialize(WGPUDevice device, WGPUQueue queue,
                               const Config &config) {
+    spdlog::info("[REINIT] Start: numParticles {} -> {}", numParticles_, config.numParticles);
+
+    // Flush all in-flight GPU work before destroying any buffers
+    spdlog::info("[REINIT] Flushing GPU queue...");
+    wgpu_utils::flushGpuQueue(device, queue);
+    spdlog::info("[REINIT] GPU queue flushed");
+
+    // Invalidate all bind groups BEFORE clearing buffers
+    spdlog::info("[REINIT] Invalidating bind groups...");
+    invalidateBindGroups();
+
     numParticles_ = config.numParticles;
     scenario_ = config.scenario;
     forceMethod_ = config.forceMethod;
     initParticles(config);
+    spdlog::info("[REINIT] initParticles done, cpuPositions size={}", cpuPositions_.size());
 
-    positions_.upload(queue, cpuPositions_.data(),
-                      numParticles_ * sizeof(glm::vec4));
-    velocities_.upload(queue, cpuVelocities_.data(),
-                       numParticles_ * sizeof(glm::vec4));
-    colors_.upload(queue, cpuColors_.data(),
-                   numParticles_ * sizeof(glm::vec4));
+    // Explicitly clear and recreate all buffers at the correct size
+    size_t bufSize = numParticles_ * sizeof(glm::vec4);
+    spdlog::info("[REINIT] Buffer size needed: {} bytes ({} particles)", bufSize, numParticles_);
 
-    invalidateBindGroups();
+    positions_.clear();
+    positions_.initialize(
+        device, WGPUBufferUsage_Storage | WGPUBufferUsage_CopyDst |
+                    WGPUBufferUsage_CopySrc, bufSize);
+    spdlog::info("[REINIT] positions_ recreated, handle={}", (void*)positions_.get());
+
+    velocities_.clear();
+    velocities_.initialize(
+        device, WGPUBufferUsage_Storage | WGPUBufferUsage_CopyDst |
+                    WGPUBufferUsage_CopySrc, bufSize);
+    spdlog::info("[REINIT] velocities_ recreated, handle={}", (void*)velocities_.get());
+
+    colors_.clear();
+    colors_.initialize(device,
+                       WGPUBufferUsage_Storage | WGPUBufferUsage_CopyDst, bufSize);
+    spdlog::info("[REINIT] colors_ recreated, handle={}", (void*)colors_.get());
+
+    accelerations_.clear();
+    accelerations_.initialize(
+        device, WGPUBufferUsage_Storage | WGPUBufferUsage_CopyDst | WGPUBufferUsage_CopySrc,
+        bufSize);
+    spdlog::info("[REINIT] accelerations_ recreated, handle={}", (void*)accelerations_.get());
+
+    spdlog::info("[REINIT] Uploading particle data...");
+    positions_.upload(queue, cpuPositions_.data(), bufSize);
+    spdlog::info("[REINIT] positions uploaded");
+    velocities_.upload(queue, cpuVelocities_.data(), bufSize);
+    spdlog::info("[REINIT] velocities uploaded");
+    colors_.upload(queue, cpuColors_.data(), bufSize);
+    spdlog::info("[REINIT] colors uploaded");
+
+    spdlog::info("[REINIT] Calling computeInitialForces...");
     computeInitialForces(device, queue, config.softening, config.theta);
+    spdlog::info("[REINIT] Done");
 }
 
 void Simulation::invalidateBindGroups() {
@@ -653,19 +702,25 @@ void Simulation::invalidateBindGroups() {
 }
 
 void Simulation::ensureBindGroupsCached(WGPUDevice device) {
-    if (cachedBGParticleCount_ == numParticles_) return;
+    if (cachedBGParticleCount_ == numParticles_) {
+        spdlog::info("[SIM-BG] Cache hit, N={}", numParticles_);
+        return;
+    }
+    spdlog::info("[SIM-BG] Cache miss: cached={} current={}, recreating", cachedBGParticleCount_, numParticles_);
     invalidateBindGroups();
 
     uint32_t N = static_cast<uint32_t>(numParticles_);
     uint32_t nodeCount = 2 * N - 1;
 
-    auto makeBG = [&](WGPUBindGroupLayout layout,
+    auto makeBG = [&](const char* name, WGPUBindGroupLayout layout,
                       WGPUBindGroupEntry *entries, uint32_t count) -> WGPUBindGroup {
         WGPUBindGroupDescriptor desc{};
         desc.layout = layout;
         desc.entryCount = count;
         desc.entries = entries;
-        return wgpuDeviceCreateBindGroup(device, &desc);
+        WGPUBindGroup bg = wgpuDeviceCreateBindGroup(device, &desc);
+        spdlog::info("[SIM-BG]   {} -> {}", name, (void*)bg);
+        return bg;
     };
 
     // Kick bind group (params, velocities, accelerations)
@@ -674,7 +729,10 @@ void Simulation::ensureBindGroupsCached(WGPUDevice device) {
         e[0].binding = 0; e[0].buffer = paramsBuffer_.get(); e[0].size = 32;
         e[1].binding = 1; e[1].buffer = velocities_.get(); e[1].size = N * sizeof(glm::vec4);
         e[2].binding = 2; e[2].buffer = accelerations_.get(); e[2].size = N * sizeof(glm::vec4);
-        cachedKickBG_ = makeBG(kickBindGroupLayout_, e, 3);
+        spdlog::info("[SIM-BG] Kick: params={} vel={} ({}B) accel={} ({}B)",
+            (void*)paramsBuffer_.get(), (void*)velocities_.get(), N*sizeof(glm::vec4),
+            (void*)accelerations_.get(), N*sizeof(glm::vec4));
+        cachedKickBG_ = makeBG("kick", kickBindGroupLayout_, e, 3);
     }
 
     // Drift bind group (params, positions, velocities)
@@ -683,7 +741,10 @@ void Simulation::ensureBindGroupsCached(WGPUDevice device) {
         e[0].binding = 0; e[0].buffer = paramsBuffer_.get(); e[0].size = 32;
         e[1].binding = 1; e[1].buffer = positions_.get(); e[1].size = N * sizeof(glm::vec4);
         e[2].binding = 2; e[2].buffer = velocities_.get(); e[2].size = N * sizeof(glm::vec4);
-        cachedDriftBG_ = makeBG(driftBindGroupLayout_, e, 3);
+        spdlog::info("[SIM-BG] Drift: params={} pos={} ({}B) vel={} ({}B)",
+            (void*)paramsBuffer_.get(), (void*)positions_.get(), N*sizeof(glm::vec4),
+            (void*)velocities_.get(), N*sizeof(glm::vec4));
+        cachedDriftBG_ = makeBG("drift", driftBindGroupLayout_, e, 3);
     }
 
     // BVH force bind group (params, positions, nodes, accelerations, sortIndices)
@@ -695,10 +756,16 @@ void Simulation::ensureBindGroupsCached(WGPUDevice device) {
         e[2].binding = 2; e[2].buffer = gpuTreeBuilder_.getTraversalNodesBuffer(); e[2].size = nodeCount * GpuTreeBuilder::kTraversalNodeSize;
         e[3].binding = 3; e[3].buffer = accelerations_.get(); e[3].size = N * sizeof(glm::vec4);
         e[4].binding = 4; e[4].buffer = gpuTreeBuilder_.getSortIndicesBuffer(); e[4].size = paddedN * sizeof(uint32_t);
-        cachedBvhForceBG_ = makeBG(bvhForceBindGroupLayout_, e, 5);
+        spdlog::info("[SIM-BG] BvhForce: pos={} traversal={} ({}B) accel={} sortIdx={} ({}B) nodeCount={} paddedN={}",
+            (void*)positions_.get(), (void*)gpuTreeBuilder_.getTraversalNodesBuffer(),
+            nodeCount * GpuTreeBuilder::kTraversalNodeSize,
+            (void*)accelerations_.get(), (void*)gpuTreeBuilder_.getSortIndicesBuffer(),
+            paddedN * sizeof(uint32_t), nodeCount, paddedN);
+        cachedBvhForceBG_ = makeBG("bvhForce", bvhForceBindGroupLayout_, e, 5);
     }
 
     cachedBGParticleCount_ = numParticles_;
+    spdlog::info("[SIM-BG] All bind groups cached for N={}", numParticles_);
 }
 
 void Simulation::debugDumpTree(WGPUDevice device, WGPUQueue queue) {
@@ -792,6 +859,9 @@ void Simulation::readbackState(WGPUDevice device, WGPUQueue queue,
 
 void Simulation::step(WGPUDevice device, WGPUQueue queue, float dt,
                       float softening, float theta) {
+    spdlog::debug("[STEP] N={} method={} pos={} vel={} accel={}",
+        numParticles_, forceMethod_ == ForceMethod::Direct ? "direct" : "tree",
+        (void*)positions_.get(), (void*)velocities_.get(), (void*)accelerations_.get());
     if (forceMethod_ == ForceMethod::Direct) {
         stepWithDirectForce(device, queue, dt, softening, theta);
     } else {
