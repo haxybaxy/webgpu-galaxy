@@ -41,9 +41,19 @@ private:
     WGPUBindGroup fadeBindGroup_ = nullptr;
     wgpu_utils::Buffer fadeUniformBuffer_;
 
-    // Persistent trail accumulation texture
-    WGPUTexture trailTexture_ = nullptr;
-    WGPUTextureView trailTextureView_ = nullptr;
+    // Ping-pong trail accumulation textures
+    WGPUTexture trailTextures_[2] = {nullptr, nullptr};
+    WGPUTextureView trailTextureViews_[2] = {nullptr, nullptr};
+    int trailPingPong_ = 0;
     uint32_t trailWidth_ = 0;
     uint32_t trailHeight_ = 0;
+
+    // Trail reprojection (camera-independent trails)
+    WGPURenderPipeline reprojPipeline_ = nullptr;
+    WGPUBindGroupLayout reprojBindGroupLayout_ = nullptr;
+    WGPUBindGroup reprojBindGroups_[2] = {nullptr, nullptr};
+    WGPUSampler reprojSampler_ = nullptr;
+    wgpu_utils::Buffer reprojUniformBuffer_;
+    glm::mat4 prevViewProj_ = glm::mat4(1.0f);
+    bool hasPrevViewProj_ = false;
 };

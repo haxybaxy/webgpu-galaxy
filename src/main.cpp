@@ -47,6 +47,7 @@ class Application {
     float currentFPS_ = 0.0f;
     int lastParticleCount_ = 0;
     int stepCount_ = 0;
+    bool stepLimitReached_ = false;
     double simTime_ = 0.0;
     int diagInterval_ = 60;
     Diagnostics lastDiag_{};
@@ -225,6 +226,28 @@ public:
             if (exporter_.isOpen()) {
                 exporter_.writeRow(stepCount_, simTime_, lastDiag_, timing);
             }
+
+#ifdef __EMSCRIPTEN__
+            // Log CSV to browser console for benchmark runs
+            if (config_.maxSteps > 0) {
+                if (stepCount_ == 1) {
+                    if (timing.hasPassBreakdown) {
+                        spdlog::info("CSV:step,time,tree_build_ms,force_ms,integrate_ms,bbox_ms,morton_ms,radix_sort_ms,karras_ms,leaf_init_ms,aggregate_ms");
+                    } else {
+                        spdlog::info("CSV:step,time,tree_build_ms,force_ms,integrate_ms");
+                    }
+                }
+                if (timing.hasPassBreakdown) {
+                    spdlog::info("CSV:{},{:.6f},{:.3f},{:.3f},{:.3f},{:.3f},{:.3f},{:.3f},{:.3f},{:.3f},{:.3f}",
+                        stepCount_, simTime_, timing.treeBuildMs, timing.forceMs, timing.integrateMs,
+                        timing.bboxReduceMs, timing.mortonMs, timing.radixSortMs,
+                        timing.karrasMs, timing.leafInitMs, timing.aggregateMs);
+                } else {
+                    spdlog::info("CSV:{},{:.6f},{:.3f},{:.3f},{:.3f}",
+                        stepCount_, simTime_, timing.treeBuildMs, timing.forceMs, timing.integrateMs);
+                }
+            }
+#endif
         }
 
         // FPS counter
@@ -281,11 +304,12 @@ public:
 #endif
 
         // Check step limit for interactive mode
-        if (config_.maxSteps > 0 && stepCount_ >= config_.maxSteps) {
+        if (config_.maxSteps > 0 && stepCount_ >= config_.maxSteps && !stepLimitReached_) {
             spdlog::info("Reached step limit ({})", config_.maxSteps);
+            stepLimitReached_ = true;
+            params.paused = true;
+#ifndef __EMSCRIPTEN__
             running_ = false;
-#ifdef __EMSCRIPTEN__
-            emscripten_cancel_main_loop();
 #endif
         }
     }

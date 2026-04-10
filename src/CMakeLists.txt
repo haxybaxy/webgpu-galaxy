@@ -102,5 +102,6 @@ if(EMSCRIPTEN)
         -sASYNCIFY
         -sALLOW_MEMORY_GROWTH=1
         -sFORCE_FILESYSTEM=1
-        -sUSE_GLFW=3)
+        -sUSE_GLFW=3
+        --shell-file ${CMAKE_CURRENT_SOURCE_DIR}/shell.html)
 endif()

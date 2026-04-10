@@ -14,6 +14,8 @@
 
 namespace wgpu_utils {
 
+static WGPUInstance s_instance = nullptr;
+
 WGPUInstance requestInstance() {
     spdlog::debug("Creating WGPU instance...");
     WGPUInstanceDescriptor desc = {};
@@ -23,9 +25,9 @@ WGPUInstance requestInstance() {
     dawnToggles.chain.sType = WGPUSType_DawnTogglesDescriptor;
     dawnToggles.chain.next = nullptr;
     dawnToggles.enabledToggles = kEnabledToggles;
-    dawnToggles.enabledTogglesCount = 1;
+    dawnToggles.enabledToggleCount = 1;
     dawnToggles.disabledToggles = nullptr;
-    dawnToggles.disabledTogglesCount = 0;
+    dawnToggles.disabledToggleCount = 0;
     desc.nextInChain = reinterpret_cast<const WGPUChainedStruct *>(&dawnToggles);
 #else
     desc.nextInChain = nullptr;
@@ -39,6 +41,7 @@ WGPUInstance requestInstance() {
         throw std::runtime_error("Failed to create WGPU instance");
     }
     spdlog::info("WGPU instance created: {:#x}", size_t(instance));
+    s_instance = instance;
     return instance;
 }
 
@@ -199,6 +202,23 @@ void wgpuPollEvents([[maybe_unused]] WGPUDevice device,
 }
 
 void flushGpuQueue(WGPUDevice device, WGPUQueue queue) {
+#if defined(WEBGPU_BACKEND_DAWN)
+    // Dawn's OnSubmittedWorkDone fires on CPU submission, not GPU completion.
+    // Force a real GPU fence by mapping a tiny buffer (requires all prior GPU work to finish).
+    WGPUBufferDescriptor bufDesc{};
+    bufDesc.size = 4;
+    bufDesc.usage = WGPUBufferUsage_MapRead | WGPUBufferUsage_CopyDst;
+    WGPUBuffer fence = wgpuDeviceCreateBuffer(device, &bufDesc);
+    bool done = false;
+    wgpuBufferMapAsync(fence, WGPUMapMode_Read, 0, 4,
+        [](WGPUBufferMapAsyncStatus, void *ud) { *static_cast<bool *>(ud) = true; },
+        &done);
+    while (!done) {
+        wgpuDeviceTick(device);
+    }
+    wgpuBufferUnmap(fence);
+    wgpuBufferRelease(fence);
+#else
     bool done = false;
     wgpuQueueOnSubmittedWorkDone(
         queue,
@@ -207,6 +227,7 @@ void flushGpuQueue(WGPUDevice device, WGPUQueue queue) {
     while (!done) {
         wgpuPollEvents(device, true);
     }
+#endif
 }
 
 Buffer::Buffer()

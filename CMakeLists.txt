@@ -18,10 +18,19 @@ FetchContent_Declare(WebGPU-distribution
     GIT_REPOSITORY https://github.com/eliemichel/WebGPU-distribution
     GIT_TAG main-v0.2.0
 )
+# Dawn workarounds
+if (WEBGPU_BACKEND STREQUAL "DAWN")
+    # Prevent building libprotobuf-mutator (needs protobuf)
+    add_library(libprotobuf-mutator INTERFACE)
+    # Fix Abseil passing x86 SSE flags on arm64 Apple builds
+    if (APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64")
+        set(ABSL_RANDOM_RANDEN_COPTS "-march=armv8-a+crypto" CACHE STRING "" FORCE)
+    endif()
+endif()
 FetchContent_MakeAvailable(WebGPU-distribution)
 
 # GLFW must be available before glfw3webgpu
-if(NOT EMSCRIPTEN)
+if(NOT EMSCRIPTEN AND NOT TARGET glfw)
     FetchContent_Declare(glfw
         GIT_REPOSITORY https://github.com/glfw/glfw
         GIT_TAG 3.4
