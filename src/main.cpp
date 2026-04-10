@@ -326,6 +326,8 @@ static void runHeadless(const Config &config) {
 
     Simulation simulation;
     simulation.initialize(device, queue, config);
+    simulation.setSyncTiming(config.syncTiming);
+    simulation.setBenchmarkPasses(config.benchmarkPasses);
 
     // Screenshot support in headless mode
     bool hasScreenshots = !config.screenshotTimes.empty();
@@ -352,7 +354,7 @@ static void runHeadless(const Config &config) {
     DiagnosticsCalculator diagnostics;
     Exporter exporter;
     if (!config.exportPath.empty()) {
-        if (!exporter.open(config.exportPath)) {
+        if (!exporter.open(config.exportPath, config.benchmarkPasses)) {
             spdlog::error("Failed to open export file: {}", config.exportPath);
         }
     }

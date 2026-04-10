@@ -18,6 +18,8 @@ struct Config {
     int maxSteps = 0;          // 0 = interactive (no limit)
     std::string exportPath;    // empty = no export
     bool headless = false;     // run without window (batch mode)
+    bool syncTiming = false;   // flush GPU before recording timestamps
+    bool benchmarkPasses = false; // per-pass LBVH timing via separate submissions
     std::vector<double> screenshotTimes; // times at which to capture screenshots
 };
 

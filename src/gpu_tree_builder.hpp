@@ -15,6 +15,16 @@ struct BVHNodeGPU {
 
 static_assert(sizeof(BVHNodeGPU) == 64, "BVHNodeGPU must be 64 bytes");
 
+struct TreePassTiming {
+    double bboxReduceMs = 0.0;
+    double mortonMs = 0.0;
+    double radixSortMs = 0.0;
+    double karrasMs = 0.0;
+    double leafInitMs = 0.0;
+    double aggregateMs = 0.0;
+    double totalMs = 0.0;
+};
+
 class GpuTreeBuilder {
 public:
     void initialize(WGPUDevice device, uint32_t maxParticles);
@@ -26,6 +36,12 @@ public:
                          WGPUBuffer positionsBuffer,
                          WGPUBuffer paramsBuffer,
                          uint32_t numParticles);
+
+    TreePassTiming recordTreeBuildTimed(WGPUDevice device,
+                                        WGPUQueue queue,
+                                        WGPUBuffer positionsBuffer,
+                                        WGPUBuffer paramsBuffer,
+                                        uint32_t numParticles);
 
     WGPUBuffer getBvhNodesBuffer() const { return bvhNodes_.get(); }
     WGPUBuffer getBboxResultBuffer() const { return bboxResult_.get(); }

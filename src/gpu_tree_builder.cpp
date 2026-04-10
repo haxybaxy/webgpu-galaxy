@@ -1,5 +1,6 @@
 #include "gpu_tree_builder.hpp"
 #include <spdlog/spdlog.h>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 
@@ -1267,4 +1268,198 @@ void GpuTreeBuilder::recordTreeBuild(WGPUDevice device,
         wgpuComputePassEncoderEnd(pass);
         wgpuComputePassEncoderRelease(pass);
     }
+}
+
+// ============================================================
+// Record Tree Build (Timed) — separate submissions per pass
+// ============================================================
+
+TreePassTiming GpuTreeBuilder::recordTreeBuildTimed(
+    WGPUDevice device, WGPUQueue queue,
+    WGPUBuffer positionsBuffer, WGPUBuffer paramsBuffer,
+    uint32_t numParticles) {
+
+    using Clock = std::chrono::high_resolution_clock;
+    using ms = std::chrono::duration<double, std::milli>;
+    TreePassTiming timing;
+
+    uint32_t paddedN = getPaddedN(numParticles);
+    uint32_t numWorkgroups = (numParticles + 255) / 256;
+    uint32_t paddedWorkgroups = (paddedN + 255) / 256;
+
+    ensureBindGroupsCached(device, positionsBuffer, paramsBuffer, numParticles);
+
+    WGPUComputePassDescriptor passDesc{};
+    passDesc.timestampWrites = nullptr;
+
+    // ---- Bbox (pass 1+2) + clear atomic counters ----
+    {
+        auto t0 = Clock::now();
+        WGPUCommandEncoder enc = wgpu_utils::createCommandEncoder(device);
+
+        wgpuCommandEncoderClearBuffer(enc, atomicCounters_.get(), 0,
+                                       (numParticles - 1) * sizeof(uint32_t));
+
+        {
+            WGPUComputePassEncoder pass = wgpuCommandEncoderBeginComputePass(enc, &passDesc);
+            wgpuComputePassEncoderSetPipeline(pass, bboxPass1Pipeline_);
+            wgpuComputePassEncoderSetBindGroup(pass, 0, cachedBboxPass1BG_, 0, nullptr);
+            wgpuComputePassEncoderDispatchWorkgroups(pass, numWorkgroups, 1, 1);
+            wgpuComputePassEncoderEnd(pass);
+            wgpuComputePassEncoderRelease(pass);
+        }
+        {
+            WGPUComputePassEncoder pass = wgpuCommandEncoderBeginComputePass(enc, &passDesc);
+            wgpuComputePassEncoderSetPipeline(pass, bboxPass2Pipeline_);
+            wgpuComputePassEncoderSetBindGroup(pass, 0, cachedBboxPass2BG_, 0, nullptr);
+            wgpuComputePassEncoderDispatchWorkgroups(pass, 1, 1, 1);
+            wgpuComputePassEncoderEnd(pass);
+            wgpuComputePassEncoderRelease(pass);
+        }
+
+        wgpu_utils::finishCommandEncoder(queue, enc);
+        wgpu_utils::flushGpuQueue(device, queue);
+        timing.bboxReduceMs = ms(Clock::now() - t0).count();
+    }
+
+    // ---- Morton codes (pass 3) ----
+    {
+        auto t0 = Clock::now();
+        WGPUCommandEncoder enc = wgpu_utils::createCommandEncoder(device);
+
+        WGPUComputePassEncoder pass = wgpuCommandEncoderBeginComputePass(enc, &passDesc);
+        wgpuComputePassEncoderSetPipeline(pass, mortonPipeline_);
+        wgpuComputePassEncoderSetBindGroup(pass, 0, cachedMortonBG_, 0, nullptr);
+        wgpuComputePassEncoderDispatchWorkgroups(pass, paddedWorkgroups, 1, 1);
+        wgpuComputePassEncoderEnd(pass);
+        wgpuComputePassEncoderRelease(pass);
+
+        wgpu_utils::finishCommandEncoder(queue, enc);
+        wgpu_utils::flushGpuQueue(device, queue);
+        timing.mortonMs = ms(Clock::now() - t0).count();
+    }
+
+    // ---- Radix sort (pass 4, all 4 digit passes) ----
+    {
+        auto t0 = Clock::now();
+        WGPUCommandEncoder enc = wgpu_utils::createCommandEncoder(device);
+
+        uint32_t numHistWG = (paddedN + 1023) / 1024;
+        uint32_t histElements = 256 * numHistWG;
+        uint32_t histogramSize = histElements * sizeof(uint32_t);
+        uint32_t numScanWG = (histElements + 511) / 512;
+
+        for (uint32_t rpass = 0; rpass < 4; rpass++) {
+            uint32_t radixDynOffset = rpass * 256;
+            int pingPong = rpass % 2;
+
+            wgpuCommandEncoderClearBuffer(enc, histogram_.get(), 0, histogramSize);
+
+            {
+                WGPUComputePassEncoder p = wgpuCommandEncoderBeginComputePass(enc, &passDesc);
+                wgpuComputePassEncoderSetPipeline(p, radixHistogramPipeline_);
+                wgpuComputePassEncoderSetBindGroup(p, 0, cachedRadixHistBG_[pingPong], 1, &radixDynOffset);
+                wgpuComputePassEncoderDispatchWorkgroups(p, numHistWG, 1, 1);
+                wgpuComputePassEncoderEnd(p);
+                wgpuComputePassEncoderRelease(p);
+            }
+            {
+                uint32_t scanDynOffset = 0;
+                WGPUComputePassEncoder p = wgpuCommandEncoderBeginComputePass(enc, &passDesc);
+                wgpuComputePassEncoderSetPipeline(p, prefixScanPipeline_);
+                wgpuComputePassEncoderSetBindGroup(p, 0, cachedScanBG1_, 1, &scanDynOffset);
+                wgpuComputePassEncoderDispatchWorkgroups(p, numScanWG, 1, 1);
+                wgpuComputePassEncoderEnd(p);
+                wgpuComputePassEncoderRelease(p);
+            }
+            {
+                uint32_t scanDynOffset = 256;
+                WGPUComputePassEncoder p = wgpuCommandEncoderBeginComputePass(enc, &passDesc);
+                wgpuComputePassEncoderSetPipeline(p, prefixScanPipeline_);
+                wgpuComputePassEncoderSetBindGroup(p, 0, cachedScanBG2_, 1, &scanDynOffset);
+                wgpuComputePassEncoderDispatchWorkgroups(p, 1, 1, 1);
+                wgpuComputePassEncoderEnd(p);
+                wgpuComputePassEncoderRelease(p);
+            }
+            {
+                uint32_t scanDynOffset = 0;
+                WGPUComputePassEncoder p = wgpuCommandEncoderBeginComputePass(enc, &passDesc);
+                wgpuComputePassEncoderSetPipeline(p, prefixPropagatePipeline_);
+                wgpuComputePassEncoderSetBindGroup(p, 0, cachedPropagateBG_, 1, &scanDynOffset);
+                wgpuComputePassEncoderDispatchWorkgroups(p, numScanWG, 1, 1);
+                wgpuComputePassEncoderEnd(p);
+                wgpuComputePassEncoderRelease(p);
+            }
+            {
+                WGPUComputePassEncoder p = wgpuCommandEncoderBeginComputePass(enc, &passDesc);
+                wgpuComputePassEncoderSetPipeline(p, radixScatterPipeline_);
+                wgpuComputePassEncoderSetBindGroup(p, 0, cachedRadixScatterBG_[pingPong], 1, &radixDynOffset);
+                wgpuComputePassEncoderDispatchWorkgroups(p, numHistWG, 1, 1);
+                wgpuComputePassEncoderEnd(p);
+                wgpuComputePassEncoderRelease(p);
+            }
+        }
+
+        wgpu_utils::finishCommandEncoder(queue, enc);
+        wgpu_utils::flushGpuQueue(device, queue);
+        timing.radixSortMs = ms(Clock::now() - t0).count();
+    }
+
+    // ---- Karras tree construction (pass 5) ----
+    {
+        auto t0 = Clock::now();
+        WGPUCommandEncoder enc = wgpu_utils::createCommandEncoder(device);
+
+        uint32_t internalWG = (numParticles - 1 + 255) / 256;
+        WGPUComputePassEncoder pass = wgpuCommandEncoderBeginComputePass(enc, &passDesc);
+        wgpuComputePassEncoderSetPipeline(pass, karrasPipeline_);
+        wgpuComputePassEncoderSetBindGroup(pass, 0, cachedKarrasBG_, 0, nullptr);
+        wgpuComputePassEncoderDispatchWorkgroups(pass, internalWG, 1, 1);
+        wgpuComputePassEncoderEnd(pass);
+        wgpuComputePassEncoderRelease(pass);
+
+        wgpu_utils::finishCommandEncoder(queue, enc);
+        wgpu_utils::flushGpuQueue(device, queue);
+        timing.karrasMs = ms(Clock::now() - t0).count();
+    }
+
+    // ---- Leaf initialization (pass 6) ----
+    {
+        auto t0 = Clock::now();
+        WGPUCommandEncoder enc = wgpu_utils::createCommandEncoder(device);
+
+        uint32_t leafWG = (numParticles + 255) / 256;
+        WGPUComputePassEncoder pass = wgpuCommandEncoderBeginComputePass(enc, &passDesc);
+        wgpuComputePassEncoderSetPipeline(pass, leafInitPipeline_);
+        wgpuComputePassEncoderSetBindGroup(pass, 0, cachedLeafInitBG_, 0, nullptr);
+        wgpuComputePassEncoderDispatchWorkgroups(pass, leafWG, 1, 1);
+        wgpuComputePassEncoderEnd(pass);
+        wgpuComputePassEncoderRelease(pass);
+
+        wgpu_utils::finishCommandEncoder(queue, enc);
+        wgpu_utils::flushGpuQueue(device, queue);
+        timing.leafInitMs = ms(Clock::now() - t0).count();
+    }
+
+    // ---- Bottom-up aggregation (pass 7) ----
+    {
+        auto t0 = Clock::now();
+        WGPUCommandEncoder enc = wgpu_utils::createCommandEncoder(device);
+
+        uint32_t leafWG = (numParticles + 255) / 256;
+        WGPUComputePassEncoder pass = wgpuCommandEncoderBeginComputePass(enc, &passDesc);
+        wgpuComputePassEncoderSetPipeline(pass, aggregatePipeline_);
+        wgpuComputePassEncoderSetBindGroup(pass, 0, cachedAggregateBG_, 0, nullptr);
+        wgpuComputePassEncoderDispatchWorkgroups(pass, leafWG, 1, 1);
+        wgpuComputePassEncoderEnd(pass);
+        wgpuComputePassEncoderRelease(pass);
+
+        wgpu_utils::finishCommandEncoder(queue, enc);
+        wgpu_utils::flushGpuQueue(device, queue);
+        timing.aggregateMs = ms(Clock::now() - t0).count();
+    }
+
+    timing.totalMs = timing.bboxReduceMs + timing.mortonMs + timing.radixSortMs +
+                     timing.karrasMs + timing.leafInitMs + timing.aggregateMs;
+    return timing;
 }

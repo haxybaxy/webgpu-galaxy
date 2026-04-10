@@ -941,6 +941,11 @@ void Simulation::stepWithDirectForce(WGPUDevice device, WGPUQueue queue,
         wgpuComputePassEncoderRelease(kickPass2);
 
         wgpu_utils::finishCommandEncoder(queue, encoder);
+
+        if (syncTiming_) {
+            wgpu_utils::flushGpuQueue(device, queue);
+        }
+
         wgpuBindGroupRelease(kickBG);
         wgpuBindGroupRelease(driftBG);
         wgpuBindGroupRelease(directBG);
@@ -993,78 +998,162 @@ void Simulation::stepLeapfrogGpuTree(WGPUDevice device, WGPUQueue queue,
     // to avoid wgpuQueueWriteBuffer + wgpuPollEvents mid-recording
     gpuTreeBuilder_.prepareUploads(queue, N);
 
-    // Single command encoder for the entire GPU step
-    WGPUCommandEncoder encoder = wgpu_utils::createCommandEncoder(device);
-    WGPUComputePassDescriptor passDesc{};
-    passDesc.timestampWrites = nullptr;
-
     uint32_t wg256 = (numParticles_ + 255) / 256;
     uint32_t wg64 = (numParticles_ + 63) / 64;
 
     // Ensure cached bind groups exist
     ensureBindGroupsCached(device);
 
-    // --- Half-kick pass ---
-    {
-        WGPUComputePassEncoder kickPass =
-            wgpuCommandEncoderBeginComputePass(encoder, &passDesc);
-        wgpuComputePassEncoderSetPipeline(kickPass, kickPipeline_);
-        wgpuComputePassEncoderSetBindGroup(kickPass, 0, cachedKickBG_, 0, nullptr);
-        wgpuComputePassEncoderDispatchWorkgroups(kickPass, wg256, 1, 1);
-        wgpuComputePassEncoderEnd(kickPass);
-        wgpuComputePassEncoderRelease(kickPass);
+    WGPUComputePassDescriptor passDesc{};
+    passDesc.timestampWrites = nullptr;
+
+    if (benchmarkPasses_) {
+        // ---- Benchmark mode: separate submissions per phase ----
+
+        // Encoder 1: kick + drift
+        {
+            WGPUCommandEncoder encoder = wgpu_utils::createCommandEncoder(device);
+            {
+                WGPUComputePassEncoder kickPass =
+                    wgpuCommandEncoderBeginComputePass(encoder, &passDesc);
+                wgpuComputePassEncoderSetPipeline(kickPass, kickPipeline_);
+                wgpuComputePassEncoderSetBindGroup(kickPass, 0, cachedKickBG_, 0, nullptr);
+                wgpuComputePassEncoderDispatchWorkgroups(kickPass, wg256, 1, 1);
+                wgpuComputePassEncoderEnd(kickPass);
+                wgpuComputePassEncoderRelease(kickPass);
+            }
+            {
+                WGPUComputePassEncoder driftPass =
+                    wgpuCommandEncoderBeginComputePass(encoder, &passDesc);
+                wgpuComputePassEncoderSetPipeline(driftPass, driftPipeline_);
+                wgpuComputePassEncoderSetBindGroup(driftPass, 0, cachedDriftBG_, 0, nullptr);
+                wgpuComputePassEncoderDispatchWorkgroups(driftPass, wg256, 1, 1);
+                wgpuComputePassEncoderEnd(driftPass);
+                wgpuComputePassEncoderRelease(driftPass);
+            }
+            wgpu_utils::finishCommandEncoder(queue, encoder);
+            wgpu_utils::flushGpuQueue(device, queue);
+        }
+
+        auto t2 = Clock::now();
+
+        // Tree build with per-pass timing (handles its own submissions)
+        lastPassTiming_ = gpuTreeBuilder_.recordTreeBuildTimed(
+            device, queue, positions_.get(), paramsBuffer_.get(), N);
+
+        auto t3 = Clock::now();
+
+        // Encoder 2: BVH force + second kick
+        {
+            WGPUCommandEncoder encoder = wgpu_utils::createCommandEncoder(device);
+            {
+                WGPUComputePassEncoder forcePass =
+                    wgpuCommandEncoderBeginComputePass(encoder, &passDesc);
+                wgpuComputePassEncoderSetPipeline(forcePass, bvhForcePipeline_);
+                wgpuComputePassEncoderSetBindGroup(forcePass, 0, cachedBvhForceBG_, 0, nullptr);
+                wgpuComputePassEncoderDispatchWorkgroups(forcePass, wg64, 1, 1);
+                wgpuComputePassEncoderEnd(forcePass);
+                wgpuComputePassEncoderRelease(forcePass);
+            }
+            {
+                WGPUComputePassEncoder kickPass =
+                    wgpuCommandEncoderBeginComputePass(encoder, &passDesc);
+                wgpuComputePassEncoderSetPipeline(kickPass, kickPipeline_);
+                wgpuComputePassEncoderSetBindGroup(kickPass, 0, cachedKickBG_, 0, nullptr);
+                wgpuComputePassEncoderDispatchWorkgroups(kickPass, wg256, 1, 1);
+                wgpuComputePassEncoderEnd(kickPass);
+                wgpuComputePassEncoderRelease(kickPass);
+            }
+            wgpu_utils::finishCommandEncoder(queue, encoder);
+            wgpu_utils::flushGpuQueue(device, queue);
+        }
+
+        auto t4 = Clock::now();
+
+        lastTiming_.integrateMs =
+            std::chrono::duration<double, std::milli>(t2 - t0).count();
+        lastTiming_.treeBuildMs = lastPassTiming_.totalMs;
+        lastTiming_.forceMs =
+            std::chrono::duration<double, std::milli>(t4 - t3).count();
+        lastTiming_.bboxReduceMs = lastPassTiming_.bboxReduceMs;
+        lastTiming_.mortonMs = lastPassTiming_.mortonMs;
+        lastTiming_.radixSortMs = lastPassTiming_.radixSortMs;
+        lastTiming_.karrasMs = lastPassTiming_.karrasMs;
+        lastTiming_.leafInitMs = lastPassTiming_.leafInitMs;
+        lastTiming_.aggregateMs = lastPassTiming_.aggregateMs;
+        lastTiming_.hasPassBreakdown = true;
+
+    } else {
+        // ---- Normal mode: single command encoder ----
+        WGPUCommandEncoder encoder = wgpu_utils::createCommandEncoder(device);
+
+        // --- Half-kick pass ---
+        {
+            WGPUComputePassEncoder kickPass =
+                wgpuCommandEncoderBeginComputePass(encoder, &passDesc);
+            wgpuComputePassEncoderSetPipeline(kickPass, kickPipeline_);
+            wgpuComputePassEncoderSetBindGroup(kickPass, 0, cachedKickBG_, 0, nullptr);
+            wgpuComputePassEncoderDispatchWorkgroups(kickPass, wg256, 1, 1);
+            wgpuComputePassEncoderEnd(kickPass);
+            wgpuComputePassEncoderRelease(kickPass);
+        }
+
+        // --- Drift pass ---
+        {
+            WGPUComputePassEncoder driftPass =
+                wgpuCommandEncoderBeginComputePass(encoder, &passDesc);
+            wgpuComputePassEncoderSetPipeline(driftPass, driftPipeline_);
+            wgpuComputePassEncoderSetBindGroup(driftPass, 0, cachedDriftBG_, 0, nullptr);
+            wgpuComputePassEncoderDispatchWorkgroups(driftPass, wg256, 1, 1);
+            wgpuComputePassEncoderEnd(driftPass);
+            wgpuComputePassEncoderRelease(driftPass);
+        }
+
+        auto t2 = Clock::now();
+
+        // --- GPU tree build (~7+ compute passes) ---
+        gpuTreeBuilder_.recordTreeBuild(device, encoder,
+                                         positions_.get(), paramsBuffer_.get(), N);
+
+        auto t3 = Clock::now();
+
+        // --- BVH force pass ---
+        {
+            WGPUComputePassEncoder forcePass =
+                wgpuCommandEncoderBeginComputePass(encoder, &passDesc);
+            wgpuComputePassEncoderSetPipeline(forcePass, bvhForcePipeline_);
+            wgpuComputePassEncoderSetBindGroup(forcePass, 0, cachedBvhForceBG_, 0, nullptr);
+            wgpuComputePassEncoderDispatchWorkgroups(forcePass, wg64, 1, 1);
+            wgpuComputePassEncoderEnd(forcePass);
+            wgpuComputePassEncoderRelease(forcePass);
+        }
+
+        // --- Second half-kick pass (reuses cached kick bind group) ---
+        {
+            WGPUComputePassEncoder kickPass =
+                wgpuCommandEncoderBeginComputePass(encoder, &passDesc);
+            wgpuComputePassEncoderSetPipeline(kickPass, kickPipeline_);
+            wgpuComputePassEncoderSetBindGroup(kickPass, 0, cachedKickBG_, 0, nullptr);
+            wgpuComputePassEncoderDispatchWorkgroups(kickPass, wg256, 1, 1);
+            wgpuComputePassEncoderEnd(kickPass);
+            wgpuComputePassEncoderRelease(kickPass);
+        }
+
+        // Submit everything
+        wgpu_utils::finishCommandEncoder(queue, encoder);
+
+        if (syncTiming_) {
+            wgpu_utils::flushGpuQueue(device, queue);
+        }
+
+        auto t4 = Clock::now();
+
+        lastTiming_.integrateMs =
+            std::chrono::duration<double, std::milli>(t1 - t0).count();
+        lastTiming_.treeBuildMs =
+            std::chrono::duration<double, std::milli>(t3 - t2).count();
+        lastTiming_.forceMs =
+            std::chrono::duration<double, std::milli>(t4 - t3).count();
+        lastTiming_.hasPassBreakdown = false;
     }
-
-    // --- Drift pass ---
-    {
-        WGPUComputePassEncoder driftPass =
-            wgpuCommandEncoderBeginComputePass(encoder, &passDesc);
-        wgpuComputePassEncoderSetPipeline(driftPass, driftPipeline_);
-        wgpuComputePassEncoderSetBindGroup(driftPass, 0, cachedDriftBG_, 0, nullptr);
-        wgpuComputePassEncoderDispatchWorkgroups(driftPass, wg256, 1, 1);
-        wgpuComputePassEncoderEnd(driftPass);
-        wgpuComputePassEncoderRelease(driftPass);
-    }
-
-    auto t2 = Clock::now();
-
-    // --- GPU tree build (~7+ compute passes) ---
-    gpuTreeBuilder_.recordTreeBuild(device, encoder,
-                                     positions_.get(), paramsBuffer_.get(), N);
-
-    auto t3 = Clock::now();
-
-    // --- BVH force pass ---
-    {
-        WGPUComputePassEncoder forcePass =
-            wgpuCommandEncoderBeginComputePass(encoder, &passDesc);
-        wgpuComputePassEncoderSetPipeline(forcePass, bvhForcePipeline_);
-        wgpuComputePassEncoderSetBindGroup(forcePass, 0, cachedBvhForceBG_, 0, nullptr);
-        wgpuComputePassEncoderDispatchWorkgroups(forcePass, wg64, 1, 1);
-        wgpuComputePassEncoderEnd(forcePass);
-        wgpuComputePassEncoderRelease(forcePass);
-    }
-
-    // --- Second half-kick pass (reuses cached kick bind group) ---
-    {
-        WGPUComputePassEncoder kickPass =
-            wgpuCommandEncoderBeginComputePass(encoder, &passDesc);
-        wgpuComputePassEncoderSetPipeline(kickPass, kickPipeline_);
-        wgpuComputePassEncoderSetBindGroup(kickPass, 0, cachedKickBG_, 0, nullptr);
-        wgpuComputePassEncoderDispatchWorkgroups(kickPass, wg256, 1, 1);
-        wgpuComputePassEncoderEnd(kickPass);
-        wgpuComputePassEncoderRelease(kickPass);
-    }
-
-    // Submit everything
-    wgpu_utils::finishCommandEncoder(queue, encoder);
-
-    auto t4 = Clock::now();
-
-    lastTiming_.integrateMs =
-        std::chrono::duration<double, std::milli>(t1 - t0).count();
-    lastTiming_.treeBuildMs =
-        std::chrono::duration<double, std::milli>(t3 - t2).count();
-    lastTiming_.forceMs =
-        std::chrono::duration<double, std::milli>(t4 - t3).count();
 }

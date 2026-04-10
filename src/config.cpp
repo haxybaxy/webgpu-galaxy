@@ -68,6 +68,11 @@ Config parseArgs(int argc, char **argv) {
             std::sort(cfg.screenshotTimes.begin(), cfg.screenshotTimes.end());
         } else if (arg == "--headless") {
             cfg.headless = true;
+        } else if (arg == "--sync-timing") {
+            cfg.syncTiming = true;
+        } else if (arg == "--benchmark-passes") {
+            cfg.benchmarkPasses = true;
+            cfg.syncTiming = true; // implies sync
         } else if (arg == "--verbose") {
             // handled separately in main
         } else {

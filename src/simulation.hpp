@@ -27,6 +27,9 @@ public:
     ForceMethod getForceMethod() const { return forceMethod_; }
 
     const StepTiming &getLastTiming() const { return lastTiming_; }
+    const TreePassTiming &getLastPassTiming() const { return lastPassTiming_; }
+    void setSyncTiming(bool v) { syncTiming_ = v; }
+    void setBenchmarkPasses(bool v) { benchmarkPasses_ = v; }
     void debugDumpTree(WGPUDevice device, WGPUQueue queue);
 
 private:
@@ -59,6 +62,9 @@ private:
 
     GpuTreeBuilder gpuTreeBuilder_;
     StepTiming lastTiming_;
+    TreePassTiming lastPassTiming_;
+    bool syncTiming_ = false;
+    bool benchmarkPasses_ = false;
 
     // Kick/drift pipelines
     WGPUComputePipeline kickPipeline_ = nullptr;
