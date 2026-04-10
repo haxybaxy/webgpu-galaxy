@@ -8,7 +8,7 @@
 struct BVHNodeGPU {
     glm::vec4 centerOfMass;  // xyz = COM, w = mass
     glm::vec4 boundsMin;     // xyz = AABB min, w = unused
-    glm::vec4 boundsMax;     // xyz = AABB max, w = unused
+    glm::vec4 boundsMax;     // xyz = AABB max, w = opening radius
     int32_t left, right;
     int32_t parent, particleIdx;
 };

@@ -159,16 +159,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         let distSq = dot(diff, diff) + softSq;
         let mass = node.centerOfMass.w;
 
-        // Compute bounding-sphere radius at COM from float AABB bounds.
-        // BVH binary trees are deeper than octrees (log2 N vs log8 N), and
-        // tight AABBs make the criterion more aggressive at every level.
-        // Scale by log2(mass) to make high-level nodes (many particles)
-        // proportionally more conservative, matching octree behavior.
-        let boundsMin = node.boundsMin.xyz;
-        let boundsMax = node.boundsMax.xyz;
-        let comToCorner = max(abs(node.centerOfMass.xyz - boundsMin), abs(node.centerOfMass.xyz - boundsMax));
-        let logMass = log2(max(mass, 1.0));
-        let halfExtent = length(comToCorner) * (1.0 + logMass * 0.6);
+        // Opening radius precomputed in aggregate pass (stored in boundsMax.w).
+        let halfExtent = node.boundsMax.w;
 
         let isLeaf = (node.left < 0 && node.right < 0);
 

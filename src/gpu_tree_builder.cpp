@@ -579,8 +579,16 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         bvhNodes[current].centerOfMass = vec4f(com, totalMass);
 
         // Float min/max on AABB bounds
-        bvhNodes[current].boundsMin = vec4f(min(bvhNodes[leftIdx].boundsMin.xyz, bvhNodes[rightIdx].boundsMin.xyz), 0.0);
-        bvhNodes[current].boundsMax = vec4f(max(bvhNodes[leftIdx].boundsMax.xyz, bvhNodes[rightIdx].boundsMax.xyz), 0.0);
+        let bMin = min(bvhNodes[leftIdx].boundsMin.xyz, bvhNodes[rightIdx].boundsMin.xyz);
+        let bMax = max(bvhNodes[leftIdx].boundsMax.xyz, bvhNodes[rightIdx].boundsMax.xyz);
+        bvhNodes[current].boundsMin = vec4f(bMin, 0.0);
+
+        // Precompute opening radius: distance from COM to farthest AABB corner,
+        // scaled by log2(mass) to compensate for binary tree depth.
+        let comToCorner = max(abs(com - bMin), abs(com - bMax));
+        let logMass = log2(max(totalMass, 1.0));
+        let halfExtent = length(comToCorner) * (1.0 + logMass * 0.6);
+        bvhNodes[current].boundsMax = vec4f(bMax, halfExtent);
 
         current = bvhNodes[current].parent;
     }
