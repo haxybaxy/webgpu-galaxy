@@ -45,6 +45,7 @@ public:
 
     WGPUBuffer getBvhNodesBuffer() const { return bvhNodes_.get(); }
     WGPUBuffer getTraversalNodesBuffer() const { return traversalNodes_.get(); }
+    WGPUBuffer getSortIndicesBuffer() const { return sortIndices_.get(); }
     WGPUBuffer getBboxResultBuffer() const { return bboxResult_.get(); }
     int getNodeCount(int N) const { return (N <= 0) ? 0 : 2 * N - 1; }
     uint32_t getPaddedN(uint32_t N) const;
