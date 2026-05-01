@@ -2,7 +2,6 @@
 
 #include <cstdint>
 #include <string>
-#include <vector>
 
 enum class Scenario { TwoBody, PlummerSphere, RotatingDisk };
 enum class ForceMethod { Tree, Direct };
@@ -20,7 +19,6 @@ struct Config {
     bool headless = false;     // run without window (batch mode)
     bool syncTiming = false;   // flush GPU before recording timestamps
     bool benchmarkPasses = false; // per-pass LBVH timing via separate submissions
-    std::vector<double> screenshotTimes; // times at which to capture screenshots
 };
 
 Config parseArgs(int argc, char **argv);

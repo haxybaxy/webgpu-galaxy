@@ -8,19 +8,19 @@ add_library(imgui_lib STATIC
     ${imgui_SOURCE_DIR}/backends/imgui_impl_wgpu.cpp)
 target_include_directories(imgui_lib PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
 if(NOT EMSCRIPTEN)
-    target_compile_definitions(imgui_lib PUBLIC IMGUI_IMPL_WEBGPU_BACKEND_WGPU)
+  target_compile_definitions(imgui_lib PUBLIC IMGUI_IMPL_WEBGPU_BACKEND_WGPU)
 endif()
 if(EMSCRIPTEN)
-    target_compile_options(imgui_lib PRIVATE -Wno-error)
+  target_compile_options(imgui_lib PRIVATE -Wno-error)
 endif()
 target_link_libraries(imgui_lib PUBLIC glfw webgpu glfw3webgpu)
 
 # GLFW handling (native: FetchContent from root; Emscripten: interface lib)
 if(EMSCRIPTEN)
-    add_library(glfw INTERFACE)
-    target_link_options(glfw INTERFACE -sUSE_GLFW=3)
+  add_library(glfw INTERFACE)
+  target_link_options(glfw INTERFACE -sUSE_GLFW=3)
 else()
-    find_package(OpenGL REQUIRED)
+  find_package(OpenGL REQUIRED)
 endif()
 
 # wgpu_utils library
@@ -31,7 +31,7 @@ target_link_libraries(wgpu_utils PUBLIC webgpu spdlog)
 add_library(graphics_lib graphics.cpp graphics.hpp)
 target_link_libraries(graphics_lib PUBLIC webgpu spdlog glfw glfw3webgpu glm::glm)
 if(NOT EMSCRIPTEN)
-    target_link_libraries(graphics_lib PUBLIC OpenGL::GL)
+  target_link_libraries(graphics_lib PUBLIC OpenGL::GL)
 endif()
 
 # camera library
@@ -66,10 +66,6 @@ target_link_libraries(simulation_lib PUBLIC wgpu_utils gpu_tree_builder_lib conf
 add_library(particle_renderer_lib particle_renderer.cpp particle_renderer.hpp)
 target_link_libraries(particle_renderer_lib PUBLIC wgpu_utils glm::glm spdlog)
 
-# screenshot library
-add_library(screenshot_lib screenshot.cpp screenshot.hpp)
-target_link_libraries(screenshot_lib PUBLIC wgpu_utils particle_renderer_lib glm::glm spdlog)
-
 # Main executable
 add_executable(galaxysim main.cpp)
 set_target_properties(galaxysim PROPERTIES
@@ -88,7 +84,6 @@ target_link_libraries(galaxysim PRIVATE
     gpu_tree_builder_lib
     simulation_lib
     particle_renderer_lib
-    screenshot_lib
     config_lib
     diagnostics_lib
     exporter_lib
@@ -97,8 +92,8 @@ target_link_libraries(galaxysim PRIVATE
     spdlog)
 
 if(EMSCRIPTEN)
-    set_target_properties(galaxysim PROPERTIES SUFFIX ".html")
-    target_link_options(galaxysim PRIVATE
+  set_target_properties(galaxysim PROPERTIES SUFFIX ".html")
+  target_link_options(galaxysim PRIVATE
         -sASYNCIFY
         -sALLOW_MEMORY_GROWTH=1
         -sFORCE_FILESYSTEM=1

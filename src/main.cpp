@@ -5,7 +5,6 @@
 #include "graphics.hpp"
 #include "gui.hpp"
 #include "particle_renderer.hpp"
-#include "screenshot.hpp"
 #include "simulation.hpp"
 #include "wgpu_utils.hpp"
 #include <glm/glm.hpp>
@@ -37,7 +36,6 @@ class Application {
     Simulation simulation_;
     DiagnosticsCalculator diagnostics_;
     Exporter exporter_;
-    ScreenshotCapture screenshotCapture_;
     Config config_;
 
     bool running_ = false;
@@ -112,29 +110,6 @@ public:
             }
         }
 
-        // Initialize screenshot capture if targets specified
-        if (!config_.screenshotTimes.empty()) {
-            screenshotCapture_.setTargets(config_.screenshotTimes);
-            auto [fbw2, fbh2] = getFramebufferSize(window_);
-            screenshotCapture_.initialize(device_, surfaceFormat_, fbw2, fbh2);
-        }
-
-        // Capture t=0 screenshot if requested
-        if (!config_.screenshotTimes.empty() &&
-            config_.screenshotTimes.front() == 0.0) {
-            auto [fbw3, fbh3] = getFramebufferSize(window_);
-            float aspect0 = (fbh3 > 0)
-                ? static_cast<float>(fbw3) / static_cast<float>(fbh3)
-                : 1.0f;
-            screenshotCapture_.capture(
-                device_, queue_, renderer_,
-                simulation_.getPositionBuffer(),
-                simulation_.getColorBuffer(),
-                simulation_.getParticleCount(),
-                camera_.getViewMatrix(),
-                camera_.getProjectionMatrix(aspect0),
-                0.0);
-        }
 
         lastTime_ = getTimeSeconds();
         wgpuAdapterRelease(adapter);
@@ -190,22 +165,6 @@ public:
             params.stepOnce = false;
             stepCount_++;
             simTime_ += params.dt;
-
-            // Capture screenshots at target times
-            while (screenshotCapture_.shouldCapture(simTime_, params.dt)) {
-                auto [winW2, winH2] = getWindowSize(window_);
-                float aspect2 = (winH2 > 0)
-                    ? static_cast<float>(winW2) / static_cast<float>(winH2)
-                    : 1.0f;
-                screenshotCapture_.capture(
-                    device_, queue_, renderer_,
-                    simulation_.getPositionBuffer(),
-                    simulation_.getColorBuffer(),
-                    simulation_.getParticleCount(),
-                    camera_.getViewMatrix(),
-                    camera_.getProjectionMatrix(aspect2),
-                    simTime_);
-            }
 
             const StepTiming &timing = simulation_.getLastTiming();
             gui_.setTreeBuildMs(timing.treeBuildMs);
@@ -324,7 +283,6 @@ public:
 
     ~Application() {
         spdlog::info("Cleaning up...");
-        screenshotCapture_.cleanup();
         exporter_.close();
         gui_.shutdown();
         renderer_.cleanup();
@@ -359,44 +317,12 @@ static void runHeadless(const Config &config) {
     simulation.setSyncTiming(config.syncTiming);
     simulation.setBenchmarkPasses(config.benchmarkPasses);
 
-    // Screenshot support in headless mode
-    bool hasScreenshots = !config.screenshotTimes.empty();
-    ParticleRenderer renderer;
-    ScreenshotCapture screenshotCapture;
-    const uint32_t ssWidth = 1280, ssHeight = 720;
-    WGPUTextureFormat ssFormat = WGPUTextureFormat_BGRA8Unorm;
-
-    if (hasScreenshots) {
-        renderer.initialize(device, ssFormat, ssWidth, ssHeight);
-        screenshotCapture.setTargets(config.screenshotTimes);
-        screenshotCapture.initialize(device, ssFormat, ssWidth, ssHeight);
-    }
-
-    // Default camera for headless screenshots
-    auto headlessView = glm::lookAt(
-        glm::vec3(0.0f, 0.0f, 80.0f),
-        glm::vec3(0.0f, 0.0f, 0.0f),
-        glm::vec3(0.0f, 1.0f, 0.0f));
-    float headlessAspect = static_cast<float>(ssWidth) / static_cast<float>(ssHeight);
-    auto headlessProj = glm::perspective(
-        glm::radians(45.0f), headlessAspect, 0.1f, 1000.0f);
-
     DiagnosticsCalculator diagnostics;
     Exporter exporter;
     if (!config.exportPath.empty()) {
         if (!exporter.open(config.exportPath, config.benchmarkPasses)) {
             spdlog::error("Failed to open export file: {}", config.exportPath);
         }
-    }
-
-    // Capture t=0 screenshot if requested
-    if (hasScreenshots && config.screenshotTimes.front() == 0.0) {
-        screenshotCapture.capture(
-            device, queue, renderer,
-            simulation.getPositionBuffer(),
-            simulation.getColorBuffer(),
-            simulation.getParticleCount(),
-            headlessView, headlessProj, 0.0);
     }
 
     double simTime = 0.0;
@@ -420,16 +346,6 @@ static void runHeadless(const Config &config) {
 #endif
         simTime += config.dt;
 
-        // Capture screenshots at target times
-        while (hasScreenshots &&
-               screenshotCapture.shouldCapture(simTime, config.dt)) {
-            screenshotCapture.capture(
-                device, queue, renderer,
-                simulation.getPositionBuffer(),
-                simulation.getColorBuffer(),
-                simulation.getParticleCount(),
-                headlessView, headlessProj, simTime);
-        }
 
         const StepTiming &timing = simulation.getLastTiming();
 
@@ -467,11 +383,6 @@ static void runHeadless(const Config &config) {
     spdlog::info("Finished. Final energy drift: {:.6e}",
                  final_diag.energyDrift);
     spdlog::info("Final |momentum|: {:.6e}", final_diag.momentumMagnitude);
-
-    if (hasScreenshots) {
-        screenshotCapture.cleanup();
-        renderer.cleanup();
-    }
 
     wgpuQueueRelease(queue);
     wgpuAdapterRelease(adapter);
