@@ -38,3 +38,5 @@ compile_commands.json
 
 # Emscripten SDK (local install)
 emsdk/
+
+__pycache__/
