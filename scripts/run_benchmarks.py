@@ -8,11 +8,15 @@ Usage:
     python scripts/run_benchmarks.py -e theta_sweep           # theta parameter sweep
 
 Experiments and which paper tables they feed:
-    wgpu_sync   — wgpu-native tree, --sync-timing    → Tab1, Tab3(tree), Tab4(WebGPU), Tab5(wgpu), Tab6(Native)
-    wgpu_direct — wgpu-native direct, --sync-timing   → Tab3(direct)
-    wgpu_lbvh   — wgpu-native tree, --benchmark-passes → Tab2 (LBVH breakdown only)
-    dawn_sync   — Dawn tree, --sync-timing             → Tab5(Dawn)
-    theta_sweep — wgpu-native tree, varying theta      → Tab7
+    wgpu_sync          — wgpu-native tree, --sync-timing    → Tab1, Tab3(tree), Tab4(WebGPU), Tab5(wgpu), Tab6(Native)
+    wgpu_direct        — wgpu-native direct, --sync-timing   → Tab3(direct)
+    wgpu_lbvh          — wgpu-native tree, --benchmark-passes → Tab2 (LBVH breakdown only)
+    dawn_sync          — Dawn tree, --sync-timing             → Tab5(Dawn)
+    theta_sweep        — wgpu-native tree, varying theta      → Tab7
+    twobody_sweep      — two-body dt sweep, tree, --sync-timing → Group 1 validation
+    dt_sweep           — plummer, varying dt                   → Group 2c
+    softening_sweep    — plummer, varying softening            → Group 2e
+    disk_sync          — disk scenario, --sync-timing          → Group 3a
 
 Browser experiments (Chrome, Safari) must be run manually and placed in results/benchmarks/:
     chrome_sync_N{N}.csv  — N={1000,5000,10000,50000,100000} → Tab5(Chrome), Tab6(Chrome)
@@ -82,14 +86,58 @@ EXPERIMENTS = {
         "extra_args": ["--sync-timing"],
         "theta_values": [0.3, 0.5, 0.7, 1.0],
     },
+    "twobody_sweep": {
+        "description": "Two-body dt sweep, tree (--sync-timing) → Group 1",
+        "binary": "wgpu",
+        "Ns": [2],
+        "steps": 5000,
+        "force_method": "tree",
+        "extra_args": ["--sync-timing"],
+        "scenario": "twobody",
+        "dt_values": [0.0001, 0.0005, 0.001, 0.005],
+    },
+    "dt_sweep": {
+        "description": "Timestep sweep (--sync-timing) → Group 2c",
+        "binary": "wgpu",
+        "Ns": [5000],
+        "steps": 5000,
+        "force_method": "tree",
+        "extra_args": ["--sync-timing"],
+        "dt_values": [0.0001, 0.0005, 0.001, 0.005],
+    },
+    "softening_sweep": {
+        "description": "Softening sweep (--sync-timing) → Group 2e",
+        "binary": "wgpu",
+        "Ns": [5000],
+        "steps": 5000,
+        "force_method": "tree",
+        "extra_args": ["--sync-timing"],
+        "softening_values": [0.1, 0.25, 0.5, 1.0, 2.0],
+    },
+    "disk_sync": {
+        "description": "Disk N-scaling (--sync-timing) → Group 3a",
+        "binary": "wgpu",
+        "Ns": [1000, 5000, 10000, 50000, 100000],
+        "steps": 150,
+        "force_method": "tree",
+        "extra_args": ["--sync-timing"],
+        "scenario": "disk",
+    },
 }
 
 
-def run_single(binary, csv_path, n, steps, force_method, extra_args, theta=None):
+def run_single(binary, csv_path, n, steps, force_method, extra_args,
+               theta=None, scenario=None, dt=None, softening=None):
     """Run a single benchmark configuration."""
     params = dict(COMMON_PARAMS)
     if theta is not None:
         params["theta"] = str(theta)
+    if scenario is not None:
+        params["scenario"] = scenario
+    if dt is not None:
+        params["dt"] = str(dt)
+    if softening is not None:
+        params["softening"] = str(softening)
 
     cmd = [
         binary,
@@ -140,10 +188,13 @@ def run_experiment(binaries, name, config, results_dir):
 
     successes = 0
     total = 0
+    scenario = config.get("scenario")
 
     theta_values = config.get("theta_values")
+    dt_values = config.get("dt_values")
+    softening_values = config.get("softening_values")
+
     if theta_values:
-        # Theta sweep: one run per theta value
         for theta in theta_values:
             for n in config["Ns"]:
                 csv_name = f"theta_{theta}_N{n}.csv"
@@ -151,16 +202,36 @@ def run_experiment(binaries, name, config, results_dir):
                 total += 1
                 if run_single(binary, csv_path, n, config["steps"],
                               config["force_method"], config["extra_args"],
-                              theta=theta):
+                              theta=theta, scenario=scenario):
+                    successes += 1
+    elif dt_values:
+        for dt in dt_values:
+            for n in config["Ns"]:
+                csv_name = f"dt_{dt}_N{n}.csv"
+                csv_path = os.path.join(results_dir, csv_name)
+                total += 1
+                if run_single(binary, csv_path, n, config["steps"],
+                              config["force_method"], config["extra_args"],
+                              dt=dt, scenario=scenario):
+                    successes += 1
+    elif softening_values:
+        for soft in softening_values:
+            for n in config["Ns"]:
+                csv_name = f"softening_{soft}_N{n}.csv"
+                csv_path = os.path.join(results_dir, csv_name)
+                total += 1
+                if run_single(binary, csv_path, n, config["steps"],
+                              config["force_method"], config["extra_args"],
+                              softening=soft, scenario=scenario):
                     successes += 1
     else:
-        # Standard experiment: one run per N
         for n in config["Ns"]:
             csv_name = f"{name}_N{n}.csv"
             csv_path = os.path.join(results_dir, csv_name)
             total += 1
             if run_single(binary, csv_path, n, config["steps"],
-                          config["force_method"], config["extra_args"]):
+                          config["force_method"], config["extra_args"],
+                          scenario=scenario):
                 successes += 1
 
     print(f"  Completed: {successes}/{total}")

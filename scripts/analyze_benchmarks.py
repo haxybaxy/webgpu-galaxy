@@ -276,7 +276,7 @@ def fig4_lbvh_breakdown(fig_dir, bench_dir):
         vals = [data[n][col].mean() for n in plot_ns]
         pass_means.append(vals)
 
-    fig, ax = plt.subplots()
+    fig, ax = plt.subplots(figsize=(6, 4.5))
     x = np.arange(len(plot_ns))
     width = 0.6
     bottom = np.zeros(len(plot_ns))
@@ -300,8 +300,9 @@ def fig4_lbvh_breakdown(fig_dir, bench_dir):
     ax.set_xticklabels([f"{n:,}" for n in plot_ns], fontsize=8)
     ax.set_xlabel("N (particles)")
     ax.set_ylabel("ms")
+    ax.set_ylim(top=14)
     ax.set_title("LBVH Construction: Per-Pass Breakdown")
-    ax.legend(fontsize=7, loc="upper left")
+    ax.legend(fontsize=7, loc="upper center", bbox_to_anchor=(0.5, -0.12), ncol=3)
 
     path = os.path.join(fig_dir, "fig_lbvh_breakdown")
     fig.savefig(path + ".png")
@@ -476,6 +477,69 @@ def print_tables(bench_dir):
             print(f"{theta:>8.1f} {ms.mean():>8.2f} {de:>14.2e}")
         else:
             print(f"{theta:>8.1f}  MISSING")
+
+    # Table 8: Two-body validation (Group 1)
+    print("\n" + "=" * 70)
+    print("Table 8: @tab:twobody-validation (twobody dt sweep)")
+    print("=" * 70)
+    dts_twobody = [0.0001, 0.0005, 0.001, 0.005]
+    print(f"{'dt':>8} {'energy_drift':>14} {'|p|':>14}")
+    for dt in dts_twobody:
+        path = os.path.join(bench_dir, f"dt_{dt}_N2.csv")
+        if os.path.exists(path) and os.path.getsize(path) > 200:
+            df = load_csv(path)
+            de = abs(df["energy_drift"].iloc[-1])
+            pmag = np.sqrt(df["px"].iloc[-1]**2 + df["py"].iloc[-1]**2 + df["pz"].iloc[-1]**2)
+            print(f"{dt:>8g} {de:>14.2e} {pmag:>14.2e}")
+        else:
+            print(f"{dt:>8g}  MISSING")
+
+    # Table 9: Timestep sweep (Group 2c)
+    print("\n" + "=" * 70)
+    print("Table 9: @tab:dt-sweep (N=5000)")
+    print("=" * 70)
+    dts = [0.0001, 0.0005, 0.001, 0.005]
+    print(f"{'dt':>8} {'ms/step':>8} {'energy_drift':>14}")
+    for dt in dts:
+        path = os.path.join(bench_dir, f"dt_{dt}_N5000.csv")
+        if os.path.exists(path) and os.path.getsize(path) > 200:
+            df = load_csv(path)
+            ms = total_ms(df)
+            de = abs(df["energy_drift"].iloc[-1])
+            print(f"{dt:>8g} {ms.mean():>8.2f} {de:>14.2e}")
+        else:
+            print(f"{dt:>8g}  MISSING")
+
+    # Table 10: Softening sweep (Group 2e)
+    print("\n" + "=" * 70)
+    print("Table 10: @tab:softening-sweep (N=5000)")
+    print("=" * 70)
+    softs = [0.1, 0.25, 0.5, 1.0, 2.0]
+    print(f"{'epsilon':>8} {'ms/step':>8} {'energy_drift':>14}")
+    for soft in softs:
+        path = os.path.join(bench_dir, f"softening_{soft}_N5000.csv")
+        if os.path.exists(path) and os.path.getsize(path) > 200:
+            df = load_csv(path)
+            ms = total_ms(df)
+            de = abs(df["energy_drift"].iloc[-1])
+            print(f"{soft:>8g} {ms.mean():>8.2f} {de:>14.2e}")
+        else:
+            print(f"{soft:>8g}  MISSING")
+
+    # Table 11: Disk N-scaling (Group 3a)
+    print("\n" + "=" * 70)
+    print("Table 11: @tab:disk-scaling (disk_sync)")
+    print("=" * 70)
+    data = load_experiment("disk_sync", ns, bench_dir)
+    print(f"{'N':>8} {'ms/step':>8} {'tree':>8} {'force':>8} {'integ':>8}")
+    for n in ns:
+        if n not in data:
+            print(f"{n:>8}  MISSING")
+            continue
+        df = data[n]
+        ms = total_ms(df)
+        print(f"{n:>8} {ms.mean():>8.2f} {df['tree_build_ms'].mean():>8.2f} "
+              f"{df['force_ms'].mean():>8.2f} {df['integrate_ms'].mean():>8.2f}")
 
 
 # ═══════════════════════════════════════════════════════════════════
